@@ -519,15 +519,13 @@ namespace R1
 
 
         /// <summary>
-        /// Applies braking torques (with ABS per wheel), distributes motor torque
-        /// based on drive type (FWD/RWD/AWD), and updates current speed from the rigidbody.
+        /// Moves the vehicle by applying motor torque and brake torque
+        /// to wheels according to drivetrain configuration (FWD/RWD/AWD).
         /// </summary>
         private void MoveVehicle()
         {
 
             BrakeVehicle();
-
-            if (wheels == null || wheels.Length < 4) return;
 
             if (drive == driveType.allWheelDrive)
             {
@@ -535,34 +533,40 @@ namespace R1
                 {
                     if (wheels[i] == null) continue;
                     wheels[i].motorTorque = totalPower / 4f;
-                    wheels[i].brakeTorque = brakPower;
                 }
+                ApplyBrakeTorquesToWheels();
             }
             else if (drive == driveType.rearWheelDrive)
             {
                 if (wheels[2] != null) wheels[2].motorTorque = totalPower / 2f;
                 if (wheels[3] != null) wheels[3].motorTorque = totalPower / 2f;
 
-                for (int i = 0; i < wheels.Length; i++)
-                {
-                    if (wheels[i] == null) continue;
-                    wheels[i].brakeTorque = brakPower;
-                }
+                ApplyBrakeTorquesToWheels(); 
             }
-            else
+            else // FWD
             {
                 if (wheels[0] != null) wheels[0].motorTorque = totalPower / 2f;
                 if (wheels[1] != null) wheels[1].motorTorque = totalPower / 2f;
 
-                for (int i = 0; i < wheels.Length; i++)
-                {
-                    if (wheels[i] == null) continue;
-                    wheels[i].brakeTorque = brakPower;
-                }
+                ApplyBrakeTorquesToWheels(); 
             }
 
             if (rigidbody != null)
                 currentSpeed = rigidbody.velocity.magnitude * 3.6f;
+        }
+
+
+        /// <summary>
+        /// Applies the computed brake torque values (per wheel) to the WheelColliders.
+        /// This replaces the previous uniform brake assignment for more responsive braking.
+        /// </summary>
+        void ApplyBrakeTorquesToWheels()
+        {
+            if (wheels == null || wheels.Length < 4) return;
+            if (wheels[0] != null) wheels[0].brakeTorque = __brakeTorque[0];
+            if (wheels[1] != null) wheels[1].brakeTorque = __brakeTorque[1];
+            if (wheels[2] != null) wheels[2].brakeTorque = __brakeTorque[2];
+            if (wheels[3] != null) wheels[3].brakeTorque = __brakeTorque[3];
         }
 
 
