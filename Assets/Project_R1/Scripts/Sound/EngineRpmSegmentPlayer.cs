@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.Audio;
 
 namespace R1
 {
@@ -50,6 +51,12 @@ namespace R1
         /// Maximum distance for 3D audio rolloff.
         /// </summary>
         public float maxDistance = 200f;
+
+        [Header("Mixer Routing")]
+        /// <summary>
+        /// Mixer group (e.g., EngineSound) to route generated engine AudioSources to.
+        /// </summary>
+        public AudioMixerGroup engineMixerGroup;
 
         private List<AudioSource> sources = new();
         private float rpmRatioSmoothed, rpmVel;
@@ -107,6 +114,10 @@ namespace R1
                 audioSource.dopplerLevel = 0f;
                 audioSource.time = Random.Range(0f, clip.length);
                 audioSource.Play();
+
+                if (engineMixerGroup != null)
+                    audioSource.outputAudioMixerGroup = engineMixerGroup;
+
                 sources.Add(audioSource);
             }
         }
@@ -114,6 +125,7 @@ namespace R1
 
         /// <summary>
         /// Blends volumes and pitches of the audio sources based on normalized RPM.
+        /// Includes safeguards for low-RPM edge cases to prevent artifacts.
         /// </summary>
         /// <param name="rpm_01Normalized">The current RPM as a normalized 0–1 value.</param>
         void BlendSamples(float rpm_01Normalized)
@@ -141,10 +153,20 @@ namespace R1
                     weight = Mathf.SmoothStep(0f, 1f, fade);
                 }
 
+                // Intentionally reduce index 0 source volume at very low RPM
+                if (i == 0)
+                {
+                    // When RPM is below ~60% of the first step, scale down index 0 contribution
+                    float guard = Mathf.InverseLerp(stepRPM * 0.2f, stepRPM * 0.6f, rpm);
+                    weight *= Mathf.Clamp01(guard);
+                }
+
                 sources[i].volume = weight * masterVolume;
 
-                float sampleRPM = i * stepRPM;
-                float pitchOffset = rpm / Mathf.Max(1f, sampleRPM);
+                // Ensure minimum sampleRPM and clamp pitch range
+                float sampleRPM = Mathf.Max(stepRPM, i * stepRPM); // avoid division by zero
+                float rawOffset = rpm / sampleRPM;
+                float pitchOffset = Mathf.Clamp(rawOffset, 0.5f, 2.0f); // prevent excessive pitch
                 sources[i].pitch = pitch * pitchOffset;
             }
         }
