@@ -52,6 +52,33 @@ namespace R1
         /// </summary>
         public float maxDistance = 200f;
 
+        [Header("Mixer High Boost (ParamEQ)")]
+        /// <summary>
+        /// Enables or disables driving a high-frequency boost via the AudioMixer.
+        /// </summary>
+        public bool driveHighBoost = true;
+
+        /// <summary>
+        /// Name of the exposed AudioMixer parameter controlling the ParamEQ gain (in dB).
+        /// This parameter must be set in the AudioMixer asset.
+        /// </summary>
+        public string highBoostGainParam = "EngineHighBoost_dB";
+
+        /// <summary>
+        /// Curve mapping normalized RPM (0–1) to ParamEQ gain in decibels.
+        /// Typically starts at 0 dB at low RPM and increases (e.g., +2 dB) at high RPM.
+        /// </summary>
+        public AnimationCurve highBoostGainByRpm01 = new AnimationCurve(
+            new Keyframe(0f, 0f),
+            new Keyframe(1f, 2f)
+        );
+
+        /// <summary>
+        /// Reference to the AudioMixer extracted from the assigned AudioMixerGroup.
+        /// Used internally to set parameter values at runtime.
+        /// </summary>
+        private AudioMixer engineMixer;  
+
         [Header("Mixer Routing")]
         /// <summary>
         /// Mixer group (e.g., EngineSound) to route generated engine AudioSources to.
@@ -66,6 +93,7 @@ namespace R1
         /// Initializes the engine RPM audio system on start.
         /// Validates that an RPM bank with samples is assigned and creates audio sources for playback.
         /// Disables this component if the bank is missing or empty.
+        /// Also sets up the AudioMixer reference if an engine mixer group is provided.
         /// </summary>
         void Start()
         {
@@ -76,6 +104,8 @@ namespace R1
                 return;
             }
 
+            if (engineMixerGroup != null) engineMixer = engineMixerGroup.audioMixer;
+
             CreateSourcesFromBank();
         }
 
@@ -83,6 +113,7 @@ namespace R1
         /// <summary>
         /// Updates the engine sound each frame by calculating the normalized RPM ratio,
         /// smoothing it over time, and blending audio samples accordingly.
+        /// Additionally applies a high-frequency boost through the AudioMixer based on the smoothed RPM ratio.
         /// </summary>
         void Update()
         {
@@ -92,6 +123,7 @@ namespace R1
             rpmRatioSmoothed = Mathf.SmoothDamp(rpmRatioSmoothed, rpmRatio, ref rpmVel, rpmSmoothTime);
 
             BlendSamples(rpmRatioSmoothed);
+            ApplyHighBoost(rpmRatioSmoothed);
         }
 
 
@@ -169,6 +201,21 @@ namespace R1
                 float pitchOffset = Mathf.Clamp(rawOffset, 0.5f, 2.0f); // prevent excessive pitch
                 sources[i].pitch = pitch * pitchOffset;
             }
+        }
+
+
+        /// <summary>
+        /// Applies a ParamEQ high-frequency boost derived from the normalized RPM
+        /// and clamps the gain to a safe range to prevent excessive amplification.
+        /// </summary>
+        /// <param name="rpm01">Normalized RPM ratio (0–1).</param>
+        void ApplyHighBoost(float rpm01)
+        {
+            float gainDb = highBoostGainByRpm01.Evaluate(rpm01);
+
+            // Prevent excessive amplification (adjust if necessary)
+            gainDb = Mathf.Clamp(gainDb, -1f, 4f);
+            engineMixer.SetFloat(highBoostGainParam, gainDb);
         }
 
 
