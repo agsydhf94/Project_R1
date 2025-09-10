@@ -89,6 +89,50 @@ namespace R1
         private float currentDistance;
 
 
+        [Header("Per-Axis Follow Lag (seconds)")]
+        /// <summary>
+        /// Delay time on the lateral (X, left-right) axis. 
+        /// Larger values make the camera follow more slowly sideways, 
+        /// revealing more of the vehicle’s side during turns.
+        /// </summary>
+        public float lagTimeLateral = 0.30f;
+
+        /// <summary>
+        /// Delay time on the longitudinal (Z, forward-backward) axis.
+        /// </summary>
+        public float lagTimeLongitudinal = 0.20f;
+
+        /// <summary>
+        /// Delay time on the vertical (Y, up-down) axis.
+        /// </summary>
+        public float lagTimeVertical = 0.15f;
+
+        [Header("Lag Limits")]
+        /// <summary>
+        /// Maximum distance the camera is allowed to drift away from the target position.
+        /// </summary>
+        public float maxLagDistance = 3.0f;
+
+        [Header("Look Ahead")]
+        /// <summary>
+        /// Amount by which the look target is shifted forward based on vehicle speed.
+        /// </summary>
+        public float lookAheadBySpeed = 0.03f;
+
+        /// <summary>
+        /// Amount by which the look target is shifted forward based on yaw rate (turning speed).
+        /// </summary>
+        public float lookAheadByYawRate = 0.05f;
+
+        /// <summary>
+        /// Internal velocity trackers used by SmoothDamp for each axis.
+        /// </summary>
+        private float velLocalX;
+        private float velLocalY;
+        private float velLocalZ;
+
+        private Vector3 rigWorld;
+
         /// <summary>
         /// Initializes references and sets up camera positioning.
         /// </summary>
@@ -128,7 +172,8 @@ namespace R1
 
         /// <summary>
         /// Updates camera position and orientation each frame,
-        /// applying yaw slide, G-force tilt, and distance constraints.
+        /// now with per-axis SmoothDamp lag to create delayed follow effect.
+        /// This makes the camera reveal the vehicle’s side more naturally during turns.
         /// </summary>
         void LateUpdate()
         {
@@ -145,26 +190,46 @@ namespace R1
 
             Vector3 backOffset = -flatForward * currentDistance;
             Vector3 heightOffset = Vector3.up * cameraHeight;
-            Vector3 targetPos = cameraConstraint.position + player.transform.right * sideOffset + backOffset + heightOffset;
+            Vector3 slideOffset = player.transform.right * sideOffset;
+            Vector3 targetWorld = cameraConstraint.position + slideOffset + backOffset + heightOffset;
 
-            // Smooth follow
-            smoothedTarget = Vector3.SmoothDamp(smoothedTarget, targetPos, ref rigVelocity, followSmooth);
-            smoothedTarget.y = cameraConstraint.position.y + cameraHeight;
+            // Transform into player's local space for per-axis smoothing
+            Vector3 rigLocal = player.transform.InverseTransformPoint(smoothedTarget);
+            Vector3 targetLocal = player.transform.InverseTransformPoint(targetWorld);
 
-            // Clamp distance
-            float distanceToTarget = Vector3.Distance(smoothedTarget, cameraConstraint.position);
-            float maxAllowedDistance = baseDistance + 1.0f;
+            float tX = Mathf.Max(0.0001f, lagTimeLateral);
+            float tY = Mathf.Max(0.0001f, lagTimeVertical);
+            float tZ = Mathf.Max(0.0001f, lagTimeLongitudinal);
 
-            if (distanceToTarget > maxAllowedDistance)
+            // Apply SmoothDamp independently on each axis
+            rigLocal.x = Mathf.SmoothDamp(rigLocal.x, targetLocal.x, ref velLocalX, tX);
+            rigLocal.y = Mathf.SmoothDamp(rigLocal.y, targetLocal.y, ref velLocalY, tY);
+            rigLocal.z = Mathf.SmoothDamp(rigLocal.z, targetLocal.z, ref velLocalZ, tZ);
+
+            smoothedTarget = player.transform.TransformPoint(rigLocal);
+
+            // Clamp excessive lag
+            float distFromTarget = Vector3.Distance(smoothedTarget, targetWorld);
+            if (distFromTarget > maxLagDistance)
             {
-                Vector3 dir = (smoothedTarget - cameraConstraint.position).normalized;
-                smoothedTarget = cameraConstraint.position + dir * maxAllowedDistance;
+                Vector3 dir = (smoothedTarget - targetWorld).normalized;
+                smoothedTarget = targetWorld + dir * maxLagDistance;
+                velLocalX *= 0.9f; velLocalY *= 0.9f; velLocalZ *= 0.9f;
             }
 
             transform.position = smoothedTarget;
 
-            // Look direction
-            Vector3 lookTarget = cameraLookTarget.position - player.transform.right * lookOffset;
+
+            // Apply look-ahead offset for natural forward view
+            float speedKmh = carController.currentSpeed;
+            float yawRate = smoothedDeltaYaw / Mathf.Max(Time.deltaTime, 1e-4f);
+            float fwdLead = speedKmh * lookAheadBySpeed + Mathf.Abs(yawRate) * lookAheadByYawRate;
+
+            Vector3 lookTarget =
+                cameraLookTarget.position
+                + player.transform.forward * fwdLead
+                - player.transform.right * lookOffset;
+
             Vector3 forward = (lookTarget - transform.position).normalized;
             transform.rotation = Quaternion.LookRotation(forward, Vector3.up);
 
@@ -186,12 +251,12 @@ namespace R1
             float rawDeltaYaw = Mathf.DeltaAngle(prevYaw, yaw);
             prevYaw = yaw;
 
-            if (carController.KPH < 50)
+            if (carController.currentSpeed < 50)
                 rawDeltaYaw = 0f;
 
             smoothedDeltaYaw = Mathf.Lerp(smoothedDeltaYaw, rawDeltaYaw, Time.deltaTime * 10f);
 
-            float spdFactor = Mathf.Clamp01(carController.KPH / 50f);
+            float spdFactor = Mathf.Clamp01(carController.currentSpeed / 50f);
             float targetSide = Mathf.Clamp(-smoothedDeltaYaw * yawSlideGain * spdFactor, -yawSlideMax, yawSlideMax);
 
             sideOffset = Mathf.Lerp(sideOffset, targetSide, Time.deltaTime * slideSmooth);
@@ -214,7 +279,7 @@ namespace R1
             float longG = localAccel.z / 9.81f;
             float latG = localAccel.x / 9.81f;
 
-            if (carController.KPH < 50 || accel.magnitude < 2f)
+            if (carController.currentSpeed < 50 || accel.magnitude < 2f)
             {
                 pitch = Mathf.Lerp(pitch, 0f, dt * tiltSmooth);
                 roll = Mathf.Lerp(roll, 0f, dt * tiltSmooth);
