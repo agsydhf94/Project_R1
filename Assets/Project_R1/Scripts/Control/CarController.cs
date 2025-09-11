@@ -599,31 +599,44 @@ namespace R1
 
 
         /// <summary>
-        /// Applies steering angles to the front wheels using a speed-sensitive steering model
-        /// and an Ackermann-like approximation for inner/outer wheel angles.
+        /// Applies steering angles to the front wheels using a speed-sensitive model.
+        /// Uses a runtime-estimated wheelbase and track width to approximate Ackermann geometry, ensuring the inner wheel steers at a greater angle than the outer wheel during turns.
+        /// Includes safeguards against division by zero and incorrect sign handling.
         /// </summary>
         private void SteerVehicle()
         {
-
             if (wheels == null || wheels.Length < 2 || wheels[0] == null || wheels[1] == null) return;
 
             float steer = GetCurrentSteerAngle();
+            if (Mathf.Abs(steer) < 0.0001f)
+            {
+                wheels[0].steerAngle = 0f;
+                wheels[1].steerAngle = 0f;
+                return;
+            }
 
-            if (horizontal > 0)
+            float wb;
+            if (wheels.Length >= 4 && wheels[2] != null && wheels[3] != null)
             {
-                wheels[0].steerAngle = Mathf.Rad2Deg * Mathf.Atan(2.55f / (radius + (1.5f / 2))) * (steer / maxSteerAngle);
-                wheels[1].steerAngle = Mathf.Rad2Deg * Mathf.Atan(2.55f / (radius - (1.5f / 2))) * (steer / maxSteerAngle);
+                Vector3 front = 0.5f * (wheels[0].transform.position + wheels[1].transform.position);
+                Vector3 rear  = 0.5f * (wheels[2].transform.position + wheels[3].transform.position);
+                wb = Vector3.Distance(front, rear);
+                if (wb < 0.1f) wb = 2.55f;
             }
-            else if (horizontal < 0)
-            {
-                wheels[0].steerAngle = Mathf.Rad2Deg * Mathf.Atan(2.55f / (radius - (1.5f / 2))) * (steer / maxSteerAngle);
-                wheels[1].steerAngle = Mathf.Rad2Deg * Mathf.Atan(2.55f / (radius + (1.5f / 2))) * (steer / maxSteerAngle);
-            }
-            else
-            {
-                wheels[0].steerAngle = 0;
-                wheels[1].steerAngle = 0;
-            }
+            else wb = 2.55f;
+
+            float tw = 1.5f;
+            float sign = Mathf.Sign(steer);
+            float scale = steer / maxSteerAngle;
+
+            float denomL = radius + sign * (tw * 0.5f);
+            float denomR = radius - sign * (tw * 0.5f);
+
+            float angleL = Mathf.Rad2Deg * Mathf.Atan(wb / Mathf.Max(0.001f, denomL)) * scale;
+            float angleR = Mathf.Rad2Deg * Mathf.Atan(wb / Mathf.Max(0.001f, denomR)) * scale;
+
+            wheels[0].steerAngle = angleL;
+            wheels[1].steerAngle = angleR;
         }
 
 
