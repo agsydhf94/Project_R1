@@ -77,7 +77,40 @@ namespace R1
         /// Reference to the AudioMixer extracted from the assigned AudioMixerGroup.
         /// Used internally to set parameter values at runtime.
         /// </summary>
-        private AudioMixer engineMixer;  
+        private AudioMixer engineMixer;
+
+
+        [Header("Parallel Distortion Send")]
+        /// <summary>
+        /// Enables or disables automatic distortion send control based on RPM.
+        /// </summary>
+        public bool driveDistortionSend = true;
+
+        /// <summary>
+        /// Name of the exposed AudioMixer parameter controlling distortion send level (in dB).
+        /// </summary>                      
+        public string distortionSendParam = "EngineDist_Send_dB";
+
+        /// <summary>
+        /// Distortion send level in dB when at idle (RPM ≈ 0). Typically very low.
+        /// </summary> 
+        public float sendAtIdleDb = -80f;
+
+        /// <summary>
+        /// Distortion send level in dB at maximum RPM. Represents the target maximum send amount.
+        /// </summary>                            
+        public float sendAtMaxDb = -12f;                            
+        
+        /// <summary>
+        /// Curve mapping normalized RPM (0–1) to a weight factor (0–1) for distortion send.
+        /// Allows shaping so that send ramps up gradually and increases sharply at high RPM.
+        /// </summary>
+        public AnimationCurve sendByRpm01 = new AnimationCurve(
+            new Keyframe(0f, 0.05f),
+            new Keyframe(0.5f, 0.25f),
+            new Keyframe(1f, 1f)
+        );
+
 
         [Header("Mixer Routing")]
         /// <summary>
@@ -112,8 +145,9 @@ namespace R1
 
         /// <summary>
         /// Updates the engine sound each frame by calculating the normalized RPM ratio,
-        /// smoothing it over time, and blending audio samples accordingly.
-        /// Additionally applies a high-frequency boost through the AudioMixer based on the smoothed RPM ratio.
+        /// smoothing it over time, and applying audio processing:
+        /// blends audio samples, adjusts high-frequency boost, 
+        /// and drives parallel distortion send based on RPM.
         /// </summary>
         void Update()
         {
@@ -124,6 +158,7 @@ namespace R1
 
             BlendSamples(rpmRatioSmoothed);
             ApplyHighBoost(rpmRatioSmoothed);
+            ApplyDistortionSend(rpmRatioSmoothed);
         }
 
 
@@ -216,6 +251,30 @@ namespace R1
             // Prevent excessive amplification (adjust if necessary)
             gainDb = Mathf.Clamp(gainDb, -1f, 4f);
             engineMixer.SetFloat(highBoostGainParam, gainDb);
+        }
+
+
+        /// <summary>
+        /// Applies distortion send level to the AudioMixer based on the normalized RPM value.
+        /// Evaluates the sendByRpm01 curve, interpolates between idle and max dB values,
+        /// and sets the result on the configured AudioMixer parameter.
+        /// </summary>
+        /// <param name="rpm01">Normalized RPM ratio (0–1).</param>
+        void ApplyDistortionSend(float rpm01)
+        {
+            if (!driveDistortionSend) return;
+            if (engineMixer == null)
+            {
+                if (engineMixerGroup != null) engineMixer = engineMixerGroup.audioMixer;
+                if (engineMixer == null) return;
+            }
+            if (string.IsNullOrEmpty(distortionSendParam)) return;
+
+            float k = Mathf.Clamp01(sendByRpm01.Evaluate(rpm01));
+
+            float db = Mathf.Lerp(sendAtIdleDb, sendAtMaxDb, k);
+
+            engineMixer.SetFloat(distortionSendParam, db);
         }
 
 
