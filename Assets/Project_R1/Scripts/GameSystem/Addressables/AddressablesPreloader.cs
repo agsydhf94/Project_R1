@@ -44,10 +44,15 @@ namespace R1
         private readonly List<AsyncOperationHandle> _handles = new();
 
         /// <summary>
-        /// Indicates whether <see cref="PreloadAll"/> completed at least once.
-        /// Subsequent calls will early-exit to avoid duplicate work.
+        /// Indicates whether all configured labels have finished preloading successfully.
         /// </summary>
-        private bool _loaded;
+        public bool IsLoaded { get; private set; }
+
+        /// <summary>
+        /// Raised once after a successful preload pass completes.
+        /// Subscribers can safely access cached assets in the dictionaries.
+        /// </summary>
+        public event System.Action Loaded;
 
 
         /// <summary>
@@ -71,21 +76,17 @@ namespace R1
         {
             return tuningAssets.TryGetValue(key, out so);
         }
-            
 
-         /// <summary>
-        /// Downloads dependencies and loads all Addressables that match the configured labels.
-        /// Vehicle labels are loaded as <see cref="GameObject"/>s into <see cref="vehiclePrefabs"/>,
-        /// and tuning labels as <see cref="ScriptableObject"/>s into <see cref="tuningAssets"/>.
-        /// Subsequent calls are ignored once loading has completed.
+
+        /// <summary>
+        /// Preloads Addressables dependencies and assets for the configured label sets.
+        /// Populates the runtime caches (vehiclePrefabs, tuningAssets), then sets
+        /// <see cref="IsLoaded"/> to true and invokes <see cref="Loaded"/> once.
+        /// Subsequent calls do nothing if preloading has already completed.
         /// </summary>
-        /// <returns>
-        /// An <see cref="IEnumerator"/> suitable for <c>StartCoroutine</c>; yields during
-        /// dependency downloads, location queries, and asset loads.
-        /// </returns>
         public IEnumerator PreloadAll()
         {
-            if (_loaded) yield break;
+            if (IsLoaded) yield break;
 
             // Dependencies
             foreach (var label in vehicleLabels)
@@ -143,7 +144,8 @@ namespace R1
                 }
             }
 
-            _loaded = true;
+            IsLoaded = true;
+            Loaded?.Invoke();
         }
 
 
