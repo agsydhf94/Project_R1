@@ -85,4 +85,66 @@ namespace R1
         /// <summary>Current time value in seconds (monotonic).</summary>
         double Now { get; }
     }
+    /// <summary>
+    /// Defines an abstraction for recording and tracking race results across multiple players.
+    /// Provides system for starting runs, completing laps, finishing races,
+    /// and exposing leaderboards and best records.
+    /// </summary>
+    public interface IRecordService
+    {
+        /// <summary>
+        /// Called when a new race run begins for a given player.
+        /// Initializes internal state for lap tracking and personal records.
+        /// </summary>
+        /// <param name="playerId">Unique identifier for the player.</param>
+        /// <param name="playerName">Display name for the player.</param>
+        void StartRun(string playerId, string playerName);
+
+
+        /// <summary>
+        /// Called when a player completes a lap.
+        /// Updates lap-based data, including split times for per-lap analysis.
+        /// </summary>
+        /// <param name="lapTime">Duration (in seconds) of the completed lap.</param>
+        /// <param name="currentLapSplits">Read-only list of recorded split times within the lap.</param>
+        void CompleteLap(float lapTime, IReadOnlyList<float> currentLapSplits);
+
+
+        /// <summary>
+        /// Called when the player completes the full race.
+        /// Finalizes results and triggers leaderboard update events.
+        /// </summary>
+        void FinishRun();
+
+
+        /// <summary>
+        /// The best record ever achieved by the local player.
+        /// May persist across sessions for progress tracking.
+        /// </summary>
+        public RaceRecord PersonalBest { get; }
+
+
+        /// <summary>
+        /// The record currently being accumulated during an active race session.
+        /// </summary>
+        RaceRecord CurrentRun { get; }
+
+
+        /// <summary>
+        /// The best overall record among all participants (global fastest).
+        /// </summary>
+        RaceRecord OverallBest { get; }
+
+
+        /// <summary>
+        /// Ordered list of all race results, typically sorted by total or lap time.
+        /// </summary>
+        IReadOnlyList<RaceRecord> Leaderboard { get; }
+
+
+        /// <summary>
+        /// Event raised whenever the leaderboard is updated (e.g., after race completion).
+        /// </summary>
+        event Action<IReadOnlyList<RaceRecord>> OnLeaderboardUpdated;
+    }
 }
