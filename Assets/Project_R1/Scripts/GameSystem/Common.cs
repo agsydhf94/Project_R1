@@ -5,6 +5,51 @@ using UnityEngine;
 namespace R1
 {   
     /// <summary>
+    /// Lightweight struct representing a car’s ranking state during a race.
+    /// Used by the <see cref="RankManager"/> to sort participants based on progress,
+    /// lap completion, and time-based tiebreakers.
+    /// </summary>
+    [Serializable]
+    public struct RankEntry
+    {
+        /// <summary>
+        /// The GameObject representing this racer (e.g., player or AI car).
+        /// </summary>
+        public GameObject go;
+
+        /// <summary>
+        /// Scalar progress value (e.g., distance along the track or total progress).
+        /// Higher value indicates further progress.
+        /// </summary>
+        public float progress;
+
+        /// <summary>
+        /// Whether the racer has completed all laps.
+        /// </summary>
+        public bool finished;
+
+        /// <summary>
+        /// Index of the next checkpoint to reach (mirrors <see cref="LapTracker.nextCheckpoint"/>).
+        /// </summary>
+        public int nextCheckpoint; // LapTracker.nextCheckpoint
+
+        /// <summary>
+        /// Starting grid position assigned to this racer (from <see cref="GridSlot.index"/>).
+        /// </summary>
+        public int gridSlot;       // GridSlot.index
+
+        /// <summary>
+        /// Total race time accumulated so far. Used as a tiebreaker when progress values match.
+        /// </summary>
+        public float totalTime;    // tie-breaker
+
+        /// <summary>
+        /// Best individual lap time achieved by this racer. Also used as a secondary tiebreaker.
+        /// </summary>
+        public float bestLap;      // tie-breaker
+    }
+
+    /// <summary>
     /// Stores per-player race performance data, including lap times,
     /// fastest lap, and total time. Each instance corresponds to one user.
     /// </summary>
