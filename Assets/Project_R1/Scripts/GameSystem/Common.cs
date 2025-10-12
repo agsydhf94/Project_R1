@@ -5,6 +5,34 @@ using UnityEngine;
 namespace R1
 {   
     /// <summary>
+    /// Represents the overall lifecycle state of a race session.
+    /// Used by the RaceSessionManager and related UI to control race flow.
+    /// </summary>
+    public enum RaceState { PreRace, Countdown, Racing, Finished }
+
+
+    /// <summary>
+    /// Represents basic user identification and display information.
+    /// Shared between networking, identity, and leaderboard systems.
+    /// </summary>
+    public struct UserProfile
+    {
+        /// <summary>
+        /// Unique network ID of the user (e.g., Photon user ID or “LOCAL” for offline play).
+        /// </summary>
+        public string userId;
+
+        /// <summary>
+        /// Display name shown in HUDs and leaderboards.
+        /// </summary>
+        public string displayName;
+        
+        /// <summary>
+        /// Whether this profile belongs to the local player.
+        /// </summary>
+        public bool   isLocal;
+    }
+    /// <summary>
     /// Lightweight struct representing a car’s ranking state during a race.
     /// Used by the <see cref="RankManager"/> to sort participants based on progress,
     /// lap completion, and time-based tiebreakers.
