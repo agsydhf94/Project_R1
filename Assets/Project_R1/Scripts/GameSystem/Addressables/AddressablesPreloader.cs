@@ -12,6 +12,7 @@ namespace R1
     /// loaded assets in dictionaries so game code can retrieve prefabs/SOs
     /// without incurring additional async loads.
     /// </summary>
+    [DefaultExecutionOrder(-500)]
     public class AddressablesPreloader : MonoBehaviour
     {
         [Header("Labels to Preload")]
@@ -53,6 +54,26 @@ namespace R1
         /// Subscribers can safely access cached assets in the dictionaries.
         /// </summary>
         public event System.Action Loaded;
+
+
+        /// <summary>
+        /// If true, keeps this preloader alive across scene loads via <see cref="Object.DontDestroyOnLoad"/>.
+        /// Defaults to <c>true</c> so a single instance can serve multi-scene flows without reloading assets.
+        /// </summary>
+        [SerializeField] private bool dontDestroyOnLoad = true;
+
+
+        /// <summary>
+        /// Applies the lifetime policy at startup. When <see cref="dontDestroyOnLoad"/> is enabled,
+        /// the GameObject is exempted from scene unloads using <see cref="Object.DontDestroyOnLoad(object)"/>.
+        /// </summary>
+        private void Awake()
+        {
+            if (dontDestroyOnLoad)
+            {
+                DontDestroyOnLoad(gameObject);
+            }
+        }
 
 
         /// <summary>
