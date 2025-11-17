@@ -6,6 +6,14 @@ namespace R1
 {
     public class Common : MonoBehaviour
     {
+        public enum RaceState
+        {
+            PreRace,    
+            Countdown,  
+            Racing,     
+            Finished    
+        }
+
         public enum DifficultyLevel
         {
             Easy,       
