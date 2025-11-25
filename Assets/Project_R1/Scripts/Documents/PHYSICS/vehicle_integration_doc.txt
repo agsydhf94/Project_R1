@@ -1,0 +1,2346 @@
+# 3.6 차체 통합 (Vehicle Integration)
+
+## 목차
+- [3.6.1 개요 - 차체 통합이란?](#361-개요---차체-통합이란)
+- [3.6.2 통합 아키텍처](#362-통합-아키텍처)
+- [3.6.3 VehicleController 핵심 클래스](#363-vehiclecontroller-핵심-클래스)
+- [3.6.4 초기화 및 설정](#364-초기화-및-설정)
+- [3.6.5 물리 업데이트 파이프라인](#365-물리-업데이트-파이프라인)
+- [3.6.6 입력 처리](#366-입력-처리)
+- [3.6.7 힘과 토크 통합](#367-힘과-토크-통합)
+- [3.6.8 무게 중심 관리](#368-무게-중심-관리)
+- [3.6.9 안정성 시스템](#369-안정성-시스템)
+- [3.6.10 디버깅 및 텔레메트리](#3610-디버깅-및-텔레메트리)
+- [3.6.11 성능 최적화](#3611-성능-최적화)
+
+---
+
+## 3.6.1 개요 - 차체 통합이란?
+
+### 차체 통합의 의미
+
+```
+차체 통합 (Vehicle Integration):
+
+지금까지 개발한 독립적인 물리 시스템들을
+하나의 차량으로 통합하는 과정
+
+통합 대상:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1. 서스펜션 (4개)     → 수직 힘
+2. 타이어 (4개)       → 종/횡방향 힘
+3. 엔진               → 구동 토크
+4. 공기역학            → 다운포스 + 드래그
+5. 제동 시스템         → 제동 힘
+6. 조향 시스템         → 조향 각도
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+목표:
+→ 하나의 Rigidbody에 모든 힘을 올바르게 적용
+→ 자연스럽고 예측 가능한 주행 느낌
+→ 안정적이고 버그 없는 동작
+```
+
+### 통합의 핵심 과제
+
+```
+1. 힘의 순서 (Force Ordering)
+   문제: 어떤 힘을 먼저 적용할까?
+   해결: 정해진 순서로 순차 적용
+
+2. 힘의 균형 (Force Balance)
+   문제: 한쪽 바퀴가 너무 강하면?
+   해결: 자동 밸런싱 및 제한
+
+3. 수치 안정성 (Numerical Stability)
+   문제: 힘이 누적되어 폭주
+   해결: 클램핑, 댐핑, 검증
+
+4. 성능 (Performance)
+   문제: 너무 많은 계산
+   해결: 캐싱, 최적화, LOD
+
+5. 디버깅 (Debugging)
+   문제: 뭐가 문제인지 모름
+   해결: 시각화, 로깅, 텔레메트리
+```
+
+### 시스템 간 상호작용
+
+```
+상호작용 다이어그램:
+
+     [입력 시스템]
+          ↓
+     조향/스로틀/브레이크
+          ↓
+    ┌─────┴─────┐
+    ↓           ↓
+[조향 시스템]  [엔진]
+    ↓           ↓
+    ↓      구동 토크
+    ↓           ↓
+    ↓      [타이어] ←─ 서스펜션 하중
+    ↓           ↓
+    ↓      종/횡 힘
+    ↓           ↓
+    └─────┬─────┘
+          ↓
+    [Rigidbody] ←─ 공기역학 힘
+          ↓
+      속도/위치
+          ↓
+     [카메라]
+```
+
+---
+
+## 3.6.2 통합 아키텍처
+
+### 계층 구조
+
+```
+Vehicle GameObject
+├─ VehicleController (메인 통합 스크립트)
+│  ├─ Rigidbody (물리 바디)
+│  ├─ VehicleData (ScriptableObject)
+│  └─ 각종 참조들
+│
+├─ Wheels (4개)
+│  ├─ FrontLeft
+│  │  ├─ SuspensionWheel (서스펜션)
+│  │  ├─ TireModel (타이어)
+│  │  └─ WheelVisual (메쉬)
+│  ├─ FrontRight
+│  ├─ RearLeft
+│  └─ RearRight
+│
+├─ Systems
+│  ├─ EngineModel (엔진)
+│  ├─ GearboxSystem (기어박스)
+│  ├─ AerodynamicsModel (공기역학)
+│  ├─ SteeringSystem (조향)
+│  └─ BrakeSystem (제동)
+│
+└─ Effects
+   ├─ Audio
+   ├─ Particles
+   └─ Visuals
+```
+
+### 데이터 흐름
+
+```
+매 FixedUpdate 프레임:
+
+1. 입력 수집 (Input)
+   ↓
+2. 조향 각도 계산 (Steering)
+   ↓
+3. 서스펜션 Raycast (4개)
+   ↓
+4. 타이어 힘 계산 (4개)
+   ↓ ← 엔진 토크
+   ↓ ← 제동 힘
+   ↓ ← 노면 상태
+   ↓
+5. 공기역학 힘 계산
+   ↓
+6. 모든 힘을 Rigidbody에 적용
+   ↓
+7. 안정성 체크 및 보정
+   ↓
+8. 비주얼 업데이트 (바퀴, 차체)
+   ↓
+9. 사운드/VFX 업데이트
+```
+
+---
+
+## 3.6.3 VehicleController 핵심 클래스
+
+### 기본 구조
+
+```csharp
+using UnityEngine;
+using System.Collections.Generic;
+
+[RequireComponent(typeof(Rigidbody))]
+public class VehicleController : MonoBehaviour
+{
+    [Header("=== Core Components ===")]
+    public Rigidbody vehicleRigidbody;
+    public VehicleData vehicleData;
+    
+    [Header("=== Wheel Systems ===")]
+    public SuspensionWheel frontLeftWheel;
+    public SuspensionWheel frontRightWheel;
+    public SuspensionWheel rearLeftWheel;
+    public SuspensionWheel rearRightWheel;
+    
+    [Header("=== Tire Models ===")]
+    public TireModel frontLeftTire;
+    public TireModel frontRightTire;
+    public TireModel rearLeftTire;
+    public TireModel rearRightTire;
+    
+    [Header("=== Subsystems ===")]
+    public EngineModel engine;
+    public GearboxSystem gearbox;
+    public AerodynamicsModel aerodynamics;
+    public SteeringSystem steering;
+    public BrakeSystem brakes;
+    
+    [Header("=== Input ===")]
+    [Range(-1f, 1f)] public float steeringInput;
+    [Range(0f, 1f)] public float throttleInput;
+    [Range(0f, 1f)] public float brakeInput;
+    public bool handbrakeInput;
+    
+    [Header("=== Runtime State ===")]
+    [ReadOnly] public float currentSpeed; // m/s
+    [ReadOnly] public float currentSpeedKmh;
+    [ReadOnly] public bool isGrounded;
+    [ReadOnly] public int groundedWheelCount;
+    
+    // 내부 캐시
+    private SuspensionWheel[] allWheels;
+    private TireModel[] allTires;
+    private Vector3 localVelocity;
+    private bool initialized = false;
+    
+    // 성능 카운터
+    private int frameCount;
+    private float updateTimer;
+    
+    void Awake()
+    {
+        InitializeVehicle();
+    }
+    
+    void Start()
+    {
+        ValidateSetup();
+        ConfigureRigidbody();
+    }
+    
+    void FixedUpdate()
+    {
+        if (!initialized) return;
+        
+        // 메인 물리 업데이트 파이프라인
+        UpdateVehiclePhysics();
+    }
+    
+    void Update()
+    {
+        // 입력 및 비주얼 업데이트
+        UpdateInput();
+        UpdateVisuals();
+    }
+}
+```
+
+### VehicleData ScriptableObject
+
+```csharp
+using UnityEngine;
+
+[CreateAssetMenu(fileName = "VehicleData", menuName = "Vehicle/Vehicle Data")]
+public class VehicleData : ScriptableObject
+{
+    [Header("=== Physical Properties ===")]
+    [Tooltip("차량 총 질량 (kg)")]
+    [Range(800f, 2000f)]
+    public float mass = 1200f;
+    
+    [Tooltip("무게 중심 오프셋 (로컬 좌표)")]
+    public Vector3 centerOfMassOffset = new Vector3(0f, -0.3f, 0f);
+    
+    [Header("=== Dimensions ===")]
+    [Tooltip("휠베이스 (m) - 전후축 거리")]
+    public float wheelbase = 2.5f;
+    
+    [Tooltip("트랙 폭 (m) - 좌우 바퀴 거리")]
+    public float trackWidth = 1.5f;
+    
+    [Header("=== Drive Configuration ===")]
+    [Tooltip("구동 방식")]
+    public DriveType driveType = DriveType.RWD;
+    
+    [Tooltip("전방 구동 토크 비율 (AWD일 때)")]
+    [Range(0f, 1f)]
+    public float frontDriveRatio = 0.5f;
+    
+    [Header("=== Stability ===")]
+    [Tooltip("안정성 보조 시스템 (ESP)")]
+    public bool enableESP = true;
+    
+    [Tooltip("트랙션 컨트롤 (TCS)")]
+    public bool enableTCS = true;
+    
+    [Tooltip("ABS")]
+    public bool enableABS = true;
+    
+    [Header("=== References ===")]
+    public SuspensionData suspensionData;
+    public TireData tireData;
+    public EngineData engineData;
+    public AerodynamicsData aeroData;
+}
+
+public enum DriveType
+{
+    FWD,  // 전륜구동
+    RWD,  // 후륜구동
+    AWD   // 사륜구동
+}
+```
+
+---
+
+## 3.6.4 초기화 및 설정
+
+### 초기화 프로세스
+
+```csharp
+/// <summary>
+/// 차량 초기화
+/// </summary>
+private void InitializeVehicle()
+{
+    // 1. Rigidbody 참조
+    if (vehicleRigidbody == null)
+        vehicleRigidbody = GetComponent<Rigidbody>();
+    
+    // 2. 바퀴 배열 구성
+    allWheels = new SuspensionWheel[]
+    {
+        frontLeftWheel,
+        frontRightWheel,
+        rearLeftWheel,
+        rearRightWheel
+    };
+    
+    allTires = new TireModel[]
+    {
+        frontLeftTire,
+        frontRightTire,
+        rearLeftTire,
+        rearRightTire
+    };
+    
+    // 3. 각 서브시스템 초기화
+    InitializeSubsystems();
+    
+    // 4. 상호 참조 설정
+    SetupCrossReferences();
+    
+    initialized = true;
+    
+    Debug.Log($"[VehicleController] Initialized: {gameObject.name}");
+}
+
+/// <summary>
+/// 서브시스템 초기화
+/// </summary>
+private void InitializeSubsystems()
+{
+    // 엔진
+    if (engine != null)
+    {
+        engine.data = vehicleData.engineData;
+        engine.vehicleRigidbody = vehicleRigidbody;
+    }
+    
+    // 기어박스
+    if (gearbox != null)
+    {
+        gearbox.engine = engine;
+    }
+    
+    // 공기역학
+    if (aerodynamics != null)
+    {
+        aerodynamics.data = vehicleData.aeroData;
+        aerodynamics.vehicleRigidbody = vehicleRigidbody;
+    }
+    
+    // 각 바퀴
+    foreach (var wheel in allWheels)
+    {
+        if (wheel != null)
+        {
+            wheel.data = vehicleData.suspensionData;
+            wheel.vehicleRigidbody = vehicleRigidbody;
+        }
+    }
+    
+    // 각 타이어
+    foreach (var tire in allTires)
+    {
+        if (tire != null)
+        {
+            tire.data = vehicleData.tireData;
+            tire.vehicleRigidbody = vehicleRigidbody;
+        }
+    }
+}
+
+/// <summary>
+/// 상호 참조 설정 (서브시스템 간 연결)
+/// </summary>
+private void SetupCrossReferences()
+{
+    // 타이어 ↔ 서스펜션 연결
+    frontLeftTire.suspensionWheel = frontLeftWheel;
+    frontRightTire.suspensionWheel = frontRightWheel;
+    rearLeftTire.suspensionWheel = rearLeftWheel;
+    rearRightTire.suspensionWheel = rearRightWheel;
+    
+    // 엔진 ↔ 기어박스 연결
+    if (engine != null && gearbox != null)
+    {
+        engine.gearbox = gearbox;
+        gearbox.engine = engine;
+    }
+}
+```
+
+### 설정 검증
+
+```csharp
+/// <summary>
+/// 설정 유효성 검증
+/// </summary>
+private void ValidateSetup()
+{
+    List<string> errors = new List<string>();
+    
+    // 필수 컴포넌트 체크
+    if (vehicleRigidbody == null)
+        errors.Add("Rigidbody is missing!");
+    
+    if (vehicleData == null)
+        errors.Add("VehicleData is not assigned!");
+    
+    // 바퀴 체크
+    if (allWheels.Length != 4)
+        errors.Add("Must have exactly 4 wheels!");
+    
+    foreach (var wheel in allWheels)
+    {
+        if (wheel == null)
+            errors.Add($"Missing wheel reference!");
+    }
+    
+    // 타이어 체크
+    foreach (var tire in allTires)
+    {
+        if (tire == null)
+            errors.Add($"Missing tire reference!");
+    }
+    
+    // 서브시스템 체크
+    if (engine == null)
+        errors.Add("Engine is missing!");
+    
+    if (aerodynamics == null)
+        errors.Add("Aerodynamics is missing!");
+    
+    // 에러 출력
+    if (errors.Count > 0)
+    {
+        Debug.LogError($"[VehicleController] Setup Errors:\n" + 
+            string.Join("\n", errors));
+    }
+    else
+    {
+        Debug.Log($"[VehicleController] Setup validated successfully!");
+    }
+}
+
+/// <summary>
+/// Rigidbody 설정
+/// </summary>
+private void ConfigureRigidbody()
+{
+    // 질량
+    vehicleRigidbody.mass = vehicleData.mass;
+    
+    // 무게 중심
+    vehicleRigidbody.centerOfMass = vehicleData.centerOfMassOffset;
+    
+    // 관성 텐서 (자동 계산 비활성화 후 수동 설정)
+    vehicleRigidbody.automaticInertiaTensor = false;
+    vehicleRigidbody.inertiaTensor = CalculateInertiaTensor();
+    
+    // 드래그 (Unity 기본 드래그는 사용 안함 - 공기역학에서 처리)
+    vehicleRigidbody.drag = 0f;
+    vehicleRigidbody.angularDrag = 0.05f; // 약간의 감쇠
+    
+    // 보간 (부드러운 움직임)
+    vehicleRigidbody.interpolation = RigidbodyInterpolation.Interpolate;
+    
+    // 충돌 감지
+    vehicleRigidbody.collisionDetectionMode = CollisionDetectionMode.ContinuousDynamic;
+    
+    // 제약
+    vehicleRigidbody.constraints = RigidbodyConstraints.None;
+    
+    Debug.Log($"[VehicleController] Rigidbody configured: " +
+        $"Mass={vehicleRigidbody.mass}kg, CoM={vehicleRigidbody.centerOfMass}");
+}
+
+/// <summary>
+/// 관성 텐서 계산 (박스 근사)
+/// </summary>
+private Vector3 CalculateInertiaTensor()
+{
+    float mass = vehicleData.mass;
+    float length = vehicleData.wheelbase;
+    float width = vehicleData.trackWidth;
+    float height = 1.0f; // 대략적인 높이
+    
+    // 박스 관성 모멘트 공식: I = (1/12) × m × (a² + b²)
+    float Ix = (1f / 12f) * mass * (width * width + height * height);
+    float Iy = (1f / 12f) * mass * (length * length + height * height);
+    float Iz = (1f / 12f) * mass * (length * length + width * width);
+    
+    return new Vector3(Ix, Iy, Iz);
+}
+```
+
+---
+
+## 3.6.5 물리 업데이트 파이프라인
+
+### 메인 업데이트 함수
+
+```csharp
+/// <summary>
+/// 메인 물리 업데이트 (FixedUpdate에서 호출)
+/// </summary>
+private void UpdateVehiclePhysics()
+{
+    // === 0. 프리 업데이트 ===
+    PrePhysicsUpdate();
+    
+    // === 1. 조향 업데이트 ===
+    UpdateSteering();
+    
+    // === 2. 서스펜션 업데이트 (Raycast) ===
+    UpdateSuspensions();
+    
+    // === 3. 엔진 업데이트 ===
+    UpdateEngine();
+    
+    // === 4. 타이어 힘 계산 ===
+    UpdateTires();
+    
+    // === 5. 공기역학 힘 ===
+    UpdateAerodynamics();
+    
+    // === 6. 제동 힘 ===
+    UpdateBrakes();
+    
+    // === 7. 모든 힘 적용 ===
+    ApplyAllForces();
+    
+    // === 8. 안정성 시스템 ===
+    ApplyStabilitySystems();
+    
+    // === 9. 포스트 업데이트 ===
+    PostPhysicsUpdate();
+}
+```
+
+### 각 단계 상세
+
+```csharp
+/// <summary>
+/// 0. 프리 업데이트 (상태 계산)
+/// </summary>
+private void PrePhysicsUpdate()
+{
+    // 속도 계산
+    Vector3 velocity = vehicleRigidbody.velocity;
+    currentSpeed = velocity.magnitude;
+    currentSpeedKmh = currentSpeed * 3.6f;
+    
+    // 로컬 속도
+    localVelocity = transform.InverseTransformDirection(velocity);
+    
+    // 접지 상태
+    groundedWheelCount = 0;
+    foreach (var wheel in allWheels)
+    {
+        if (wheel.isGrounded)
+            groundedWheelCount++;
+    }
+    isGrounded = groundedWheelCount >= 2; // 2개 이상 접지
+    
+    frameCount++;
+}
+
+/// <summary>
+/// 1. 조향 업데이트
+/// </summary>
+private void UpdateSteering()
+{
+    if (steering == null) return;
+    
+    // 조향 각도 계산 (속도 기반 게인)
+    float steeringAngle = steering.CalculateSteeringAngle(
+        steeringInput,
+        currentSpeed
+    );
+    
+    // 전륜에 적용
+    frontLeftWheel.steeringAngle = steeringAngle;
+    frontRightWheel.steeringAngle = steeringAngle;
+}
+
+/// <summary>
+/// 2. 서스펜션 업데이트
+/// </summary>
+private void UpdateSuspensions()
+{
+    foreach (var wheel in allWheels)
+    {
+        if (wheel != null)
+        {
+            wheel.UpdateSuspension();
+        }
+    }
+}
+
+/// <summary>
+/// 3. 엔진 업데이트
+/// </summary>
+private void UpdateEngine()
+{
+    if (engine == null) return;
+    
+    // 입력 전달
+    engine.throttleInput = throttleInput;
+    engine.clutchInput = handbrakeInput ? 1f : 0f;
+    
+    // 엔진 업데이트
+    engine.UpdateEngine(Time.fixedDeltaTime);
+    
+    // 휠 속도 피드백 (구동 휠)
+    UpdateEngineRPMFromWheels();
+}
+
+/// <summary>
+/// 4. 타이어 힘 계산
+/// </summary>
+private void UpdateTires()
+{
+    // 각 타이어마다 힘 계산
+    foreach (var tire in allTires)
+    {
+        if (tire == null || tire.suspensionWheel == null) continue;
+        
+        // 서스펜션에서 하중 가져오기
+        float normalLoad = tire.suspensionWheel.currentSuspensionForce;
+        
+        // 노면 타입
+        SurfaceType surface = tire.suspensionWheel.currentSurface;
+        
+        // 타이어 힘 계산
+        tire.CalculateForces(normalLoad, surface);
+    }
+}
+
+/// <summary>
+/// 5. 공기역학 업데이트
+/// </summary>
+private void UpdateAerodynamics()
+{
+    if (aerodynamics == null) return;
+    
+    aerodynamics.UpdateAerodynamics(Vector3.zero); // 바람 없음 (기본)
+}
+
+/// <summary>
+/// 6. 제동 힘 계산
+/// </summary>
+private void UpdateBrakes()
+{
+    if (brakes == null) return;
+    
+    // 제동 입력
+    brakes.brakeInput = brakeInput;
+    brakes.handbrakeInput = handbrakeInput;
+    
+    // 각 바퀴에 제동 토크 계산
+    brakes.UpdateBrakes(allTires);
+}
+```
+
+---
+
+## 3.6.6 입력 처리
+
+### 입력 시스템
+
+```csharp
+/// <summary>
+/// 입력 업데이트 (Update에서 호출)
+/// </summary>
+private void UpdateInput()
+{
+    // 기본 키보드 입력 (나중에 InputSystem으로 대체 가능)
+    
+    // 조향
+    steeringInput = Input.GetAxis("Horizontal");
+    
+    // 스로틀
+    if (Input.GetKey(KeyCode.W) || Input.GetKey(KeyCode.UpArrow))
+    {
+        throttleInput = Mathf.MoveTowards(throttleInput, 1f, Time.deltaTime * 3f);
+    }
+    else
+    {
+        throttleInput = Mathf.MoveTowards(throttleInput, 0f, Time.deltaTime * 5f);
+    }
+    
+    // 브레이크
+    if (Input.GetKey(KeyCode.S) || Input.GetKey(KeyCode.DownArrow))
+    {
+        brakeInput = Mathf.MoveTowards(brakeInput, 1f, Time.deltaTime * 5f);
+    }
+    else
+    {
+        brakeInput = Mathf.MoveTowards(brakeInput, 0f, Time.deltaTime * 8f);
+    }
+    
+    // 핸드브레이크
+    handbrakeInput = Input.GetKey(KeyCode.Space);
+    
+    // 기어 변속 (수동)
+    if (gearbox != null && !gearbox.data.autoShift)
+    {
+        if (Input.GetKeyDown(KeyCode.E))
+            gearbox.RequestShiftUp();
+        
+        if (Input.GetKeyDown(KeyCode.Q))
+            gearbox.RequestShiftDown();
+    }
+}
+```
+
+### 입력 스무딩
+
+```csharp
+/// <summary>
+/// 부드러운 입력 처리
+/// </summary>
+public class SmoothInput
+{
+    private float currentValue;
+    private float velocity;
+    
+    public float smoothTime = 0.1f;
+    public float maxSpeed = 10f;
+    
+    public float Update(float targetValue, float deltaTime)
+    {
+        currentValue = Mathf.SmoothDamp(
+            currentValue,
+            targetValue,
+            ref velocity,
+            smoothTime,
+            maxSpeed,
+            deltaTime
+        );
+        
+        return currentValue;
+    }
+    
+    public float GetValue() => currentValue;
+}
+
+// 사용 예:
+private SmoothInput smoothSteering = new SmoothInput { smoothTime = 0.15f };
+private SmoothInput smoothThrottle = new SmoothInput { smoothTime = 0.2f };
+
+void UpdateInput()
+{
+    float rawSteering = Input.GetAxis("Horizontal");
+    steeringInput = smoothSteering.Update(rawSteering, Time.deltaTime);
+    
+    // ...
+}
+```
+
+---
+
+## 3.6.7 힘과 토크 통합
+
+### 모든 힘 적용
+
+```csharp
+/// <summary>
+/// 7. 모든 힘을 Rigidbody에 적용
+/// </summary>
+private void ApplyAllForces()
+{
+    // === A. 서스펜션 힘 (이미 각 SuspensionWheel에서 적용됨) ===
+    // (서스펜션은 자체적으로 AddForceAtPosition 호출)
+    
+    // === B. 타이어 힘 적용 ===
+    ApplyTireForces();
+    
+    // === C. 엔진 구동 토크 ===
+    ApplyDriveTorque();
+    
+    // === D. 공기역학 힘 (이미 Aerodynamics에서 적용됨) ===
+    // (공기역학도 자체적으로 적용)
+    
+    // === E. 중력 보정 (경사로 대응) ===
+    ApplyGravityCompensation();
+}
+
+/// <summary>
+/// 타이어 힘 적용
+/// </summary>
+private void ApplyTireForces()
+{
+    for (int i = 0; i < allTires.Length; i++)
+    {
+        TireModel tire = allTires[i];
+        SuspensionWheel wheel = allWheels[i];
+        
+        if (tire == null || wheel == null) continue;
+        if (!wheel.isGrounded) continue;
+        
+        // 타이어 힘 가져오기
+        TireForces forces = tire.GetCachedForces();
+        
+        // 접지점에 힘 적용
+        Vector3 contactPoint = wheel.contactPoint;
+        
+        vehicleRigidbody.AddForceAtPosition(
+            forces.total,
+            contactPoint,
+            ForceMode.Force
+        );
+    }
+}
+
+/// <summary>
+/// 엔진 구동 토크 적용
+/// </summary>
+private void ApplyDriveTorque()
+{
+    if (engine == null || gearbox == null) return;
+    
+    // 현재 기어에서의 휠 토크
+    float engineTorque = engine.GetCurrentTorque();
+    float wheelTorque = gearbox.CalculateWheelTorque(engineTorque);
+    
+    // 구동 방식에 따라 분배
+    switch (vehicleData.driveType)
+    {
+        case DriveType.FWD:
+            ApplyDriveTorqueToWheels(
+                new[] { rearLeftTire, rearRightTire },
+                wheelTorque
+            );
+            break;
+            
+        case DriveType.RWD:
+            ApplyDriveTorqueToWheels(
+                new[] { rearLeftTire, rearRightTire },
+                wheelTorque
+            );
+            break;
+            
+        case DriveType.AWD:
+            float frontTorque = wheelTorque * vehicleData.frontDriveRatio;
+            float rearTorque = wheelTorque * (1f - vehicleData.frontDriveRatio);
+            
+            ApplyDriveTorqueToWheels(
+                new[] { frontLeftTire, frontRightTire },
+                frontTorque
+            );
+            ApplyDriveTorqueToWheels(
+                new[] { rearLeftTire, rearRightTire },
+                rearTorque
+            );
+            break;
+    }
+}
+
+/// <summary>
+/// 특정 바퀴들에 구동 토크 적용
+/// </summary>
+private void ApplyDriveTorqueToWheels(TireModel[] wheels, float totalTorque)
+{
+    int driveWheelCount = 0;
+    
+    // 접지된 구동 휠 수 계산
+    foreach (var tire in wheels)
+    {
+        if (tire != null && tire.suspensionWheel != null && tire.suspensionWheel.isGrounded)
+        {
+            driveWheelCount++;
+        }
+    }
+    
+    if (driveWheelCount == 0) return;
+    
+    // 토크 분배 (접지된 휠에만)
+    float torquePerWheel = totalTorque / driveWheelCount;
+    
+    foreach (var tire in wheels)
+    {
+        if (tire == null || tire.suspensionWheel == null) continue;
+        if (!tire.suspensionWheel.isGrounded) continue;
+        
+        // 토크를 힘으로 변환 (F = T / r)
+        float radius = tire.data.radius;
+        float driveForce = torquePerWheel / radius;
+        
+        // 전진 방향으로 힘 적용
+        Vector3 forceDirection = tire.transform.forward;
+        Vector3 force = forceDirection * driveForce;
+        
+        vehicleRigidbody.AddForceAtPosition(
+            force,
+            tire.suspensionWheel.contactPoint,
+            ForceMode.Force
+        );
+    }
+}
+
+/// <summary>
+/// 중력 보정 (경사로에서 미끄러짐 방지)
+/// </summary>
+private void ApplyGravityCompensation()
+{
+    // 경사면에서 차량이 너무 쉽게 미끄러지는 것을 방지
+    
+    if (!isGrounded) return;
+    
+    // 차량 위쪽 방향과 중력 방향의 각도
+    float slopeAngle = Vector3.Angle(transform.up, Vector3.up);
+    
+    if (slopeAngle < 5f) return; // 평지면 무시
+    
+    // 정지 상태이고 입력이 없을 때만
+    if (currentSpeed < 0.5f && throttleInput < 0.1f && brakeInput < 0.1f)
+    {
+        // 경사면 방향의 중력 성분 계산
+        Vector3 gravityDirection = Vector3.ProjectOnPlane(
+            Vector3.down,
+            transform.up
+        ).normalized;
+        
+        float slopeFactor = Mathf.Sin(slopeAngle * Mathf.Deg2Rad);
+        
+        // 반대 방향 힘 적용 (정지 마찰)
+        Vector3 compensationForce = -gravityDirection * 
+            vehicleData.mass * 9.81f * slopeFactor * 0.8f;
+        
+        vehicleRigidbody.AddForce(compensationForce, ForceMode.Force);
+    }
+}
+```
+
+---
+
+## 3.6.8 무게 중심 관리
+
+### 동적 무게 중심
+
+```csharp
+/// <summary>
+/// 무게 중심 동적 조정 (고급 기능)
+/// </summary>
+public class DynamicCenterOfMass : MonoBehaviour
+{
+    [Header("References")]
+    public Rigidbody vehicleRigidbody;
+    public VehicleController controller;
+    
+    [Header("Settings")]
+    [Tooltip("가속 시 무게 이동량 (m)")]
+    [Range(0f, 0.2f)]
+    public float accelerationShift = 0.05f;
+    
+    [Tooltip("제동 시 무게 이동량 (m)")]
+    [Range(0f, 0.2f)]
+    public float brakingShift = 0.08f;
+    
+    [Tooltip("코너링 시 무게 이동량 (m)")]
+    [Range(0f, 0.1f)]
+    public float lateralShift = 0.05f;
+    
+    private Vector3 baseCenterOfMass;
+    private Vector3 currentShift;
+    
+    void Start()
+    {
+        baseCenterOfMass = vehicleRigidbody.centerOfMass;
+    }
+    
+    void FixedUpdate()
+    {
+        UpdateCenterOfMass();
+    }
+    
+    private void UpdateCenterOfMass()
+    {
+        Vector3 targetShift = Vector3.zero;
+        
+        // 1. 종방향 무게 이동 (가속/제동)
+        float longitudinalAccel = controller.localVelocity.z / Time.fixedDeltaTime;
+        
+        if (longitudinalAccel > 1f) // 가속
+        {
+            targetShift.z = -accelerationShift; // 뒤로 이동
+        }
+        else if (longitudinalAccel < -1f) // 제동
+        {
+            targetShift.z = brakingShift; // 앞으로 이동
+        }
+        
+        // 2. 횡방향 무게 이동 (코너링)
+        float lateralAccel = controller.localVelocity.x / Time.fixedDeltaTime;
+        targetShift.x = -lateralAccel * lateralShift * 0.1f;
+        
+        // 3. 부드럽게 적용
+        currentShift = Vector3.Lerp(currentShift, targetShift, Time.fixedDeltaTime * 5f);
+        
+        vehicleRigidbody.centerOfMass = baseCenterOfMass + currentShift;
+    }
+}
+```
+
+### 무게 중심 시각화
+
+```csharp
+/// <summary>
+/// 무게 중심 디버그 표시
+/// </summary>
+void OnDrawGizmos()
+{
+    if (vehicleRigidbody == null) return;
+    
+    // 무게 중심 위치 (월드 좌표)
+    Vector3 comWorld = transform.TransformPoint(vehicleRigidbody.centerOfMass);
+    
+    // 빨간 구로 표시
+    Gizmos.color = Color.red;
+    Gizmos.DrawSphere(comWorld, 0.1f);
+    
+    // 축 표시
+    Gizmos.color = Color.green;
+    Gizmos.DrawRay(comWorld, transform.up * 0.5f); // Y축
+    
+    Gizmos.color = Color.blue;
+    Gizmos.DrawRay(comWorld, transform.forward * 0.5f); // Z축
+    
+    Gizmos.color = Color.cyan;
+    Gizmos.DrawRay(comWorld, transform.right * 0.5f); // X축
+    
+    #if UNITY_EDITOR
+    UnityEditor.Handles.Label(comWorld + Vector3.up * 0.3f, "Center of Mass");
+    #endif
+}
+```
+
+---
+
+## 3.6.9 안정성 시스템
+
+### ESP (Electronic Stability Program)
+
+```csharp
+/// <summary>
+/// 8. 안정성 시스템 적용
+/// </summary>
+private void ApplyStabilitySystems()
+{
+    if (!vehicleData.enableESP) return;
+    
+    // ESP: 언더스티어/오버스티어 보정
+    ApplyESP();
+    
+    // TCS: 구동 휠 슬립 제한
+    if (vehicleData.enableTCS)
+        ApplyTCS();
+    
+    // ABS: 제동 시 잠김 방지
+    if (vehicleData.enableABS)
+        ApplyABS();
+}
+
+/// <summary>
+/// ESP 구현
+/// </summary>
+private void ApplyESP()
+{
+    if (!isGrounded || currentSpeed < 5f) return;
+    
+    // 1. 차량이 향하는 방향
+    Vector3 heading = transform.forward;
+    
+    // 2. 차량이 실제 움직이는 방향
+    Vector3 velocityDirection = vehicleRigidbody.velocity.normalized;
+    
+    // 3. 슬립 각도 계산
+    float slipAngle = Vector3.SignedAngle(heading, velocityDirection, Vector3.up);
+    
+    // 4. 슬립 각도가 크면 보정
+    if (Mathf.Abs(slipAngle) > 10f) // 10도 이상
+    {
+        // 보정 토크 (차량을 움직이는 방향으로 회전)
+        float correctionTorque = -slipAngle * 500f; // 강도 조절
+        
+        // 약하게 적용 (너무 강하면 부자연스러움)
+        correctionTorque *= 0.3f;
+        
+        vehicleRigidbody.AddTorque(
+            transform.up * correctionTorque,
+            ForceMode.Force
+        );
+    }
+}
+
+/// <summary>
+/// TCS (Traction Control System)
+/// </summary>
+private void ApplyTCS()
+{
+    if (!isGrounded) return;
+    
+    // 구동 휠들의 슬립 체크
+    TireModel[] driveWheels = GetDriveWheels();
+    
+    foreach (var tire in driveWheels)
+    {
+        if (tire == null) continue;
+        
+        // 타이어 슬립 비율
+        float slipRatio = tire.GetLongitudinalSlip();
+        
+        // 슬립이 크면 엔진 토크 감소
+        if (slipRatio > 0.15f) // 15% 이상
+        {
+            float reduction = Mathf.Clamp01((slipRatio - 0.15f) / 0.1f);
+            engine.throttleInput *= (1f - reduction * 0.5f); // 최대 50% 감소
+        }
+    }
+}
+
+/// <summary>
+/// ABS (Anti-lock Braking System)
+/// </summary>
+private void ApplyABS()
+{
+    if (brakeInput < 0.1f) return;
+    
+    foreach (var tire in allTires)
+    {
+        if (tire == null) continue;
+        
+        // 타이어 슬립 비율
+        float slipRatio = tire.GetLongitudinalSlip();
+        
+        // 완전 잠김 방지 (슬립 -1.0 = 완전 잠김)
+        if (slipRatio < -0.9f)
+        {
+            // 해당 바퀴의 브레이크 일시 해제
+            tire.brakeTorque *= 0.5f; // 50% 감소
+        }
+    }
+}
+
+/// <summary>
+/// 구동 휠 가져오기
+/// </summary>
+private TireModel[] GetDriveWheels()
+{
+    switch (vehicleData.driveType)
+    {
+        case DriveType.FWD:
+            return new[] { frontLeftTire, frontRightTire };
+            
+        case DriveType.RWD:
+            return new[] { rearLeftTire, rearRightTire };
+            
+        case DriveType.AWD:
+            return allTires;
+            
+        default:
+            return new TireModel[0];
+    }
+}
+```
+
+### 롤오버 방지
+
+```csharp
+/// <summary>
+/// 롤오버(전복) 방지 시스템
+/// </summary>
+public class RolloverPrevention : MonoBehaviour
+{
+    [Header("References")]
+    public Rigidbody vehicleRigidbody;
+    
+    [Header("Settings")]
+    [Tooltip("롤오버 방지 활성화")]
+    public bool enableRolloverPrevention = true;
+    
+    [Tooltip("최대 허용 롤 각도 (도)")]
+    [Range(30f, 60f)]
+    public float maxRollAngle = 45f;
+    
+    [Tooltip("보정 토크 강도")]
+    [Range(0f, 10000f)]
+    public float correctionTorque = 5000f;
+    
+    void FixedUpdate()
+    {
+        if (!enableRolloverPrevention) return;
+        
+        ApplyRolloverPrevention();
+    }
+    
+    private void ApplyRolloverPrevention()
+    {
+        // 현재 롤 각도
+        float currentRoll = GetRollAngle();
+        
+        if (Mathf.Abs(currentRoll) > maxRollAngle)
+        {
+            // 위험! 보정 토크 적용
+            float excessRoll = Mathf.Abs(currentRoll) - maxRollAngle;
+            float torqueAmount = excessRoll * correctionTorque;
+            
+            // 반대 방향으로 토크
+            Vector3 torque = -Mathf.Sign(currentRoll) * transform.forward * torqueAmount;
+            
+            vehicleRigidbody.AddTorque(torque, ForceMode.Force);
+        }
+    }
+    
+    private float GetRollAngle()
+    {
+        // 차량의 롤 각도 (Z축 회전)
+        Vector3 up = transform.up;
+        Vector3 right = transform.right;
+        
+        float angle = Vector3.SignedAngle(
+            Vector3.ProjectOnPlane(up, transform.forward),
+            Vector3.up,
+            transform.forward
+        );
+        
+        return angle;
+    }
+}
+```
+
+---
+
+## 3.6.10 디버깅 및 텔레메트리
+
+### 종합 디버그 UI
+
+```csharp
+/// <summary>
+/// 차량 상태 디버그 UI
+/// </summary>
+public class VehicleDebugUI : MonoBehaviour
+{
+    [Header("References")]
+    public VehicleController controller;
+    
+    [Header("Settings")]
+    public bool showDebugUI = true;
+    public KeyCode toggleKey = KeyCode.F1;
+    
+    private bool uiVisible = true;
+    
+    void Update()
+    {
+        if (Input.GetKeyDown(toggleKey))
+        {
+            uiVisible = !uiVisible;
+        }
+    }
+    
+    void OnGUI()
+    {
+        if (!showDebugUI || !uiVisible) return;
+        
+        int x = 10;
+        int y = 10;
+        int lineHeight = 20;
+        int width = 400;
+        int height = 600;
+        
+        GUI.Box(new Rect(x, y, width, height), "Vehicle Debug Info");
+        
+        y += 25;
+        
+        // === 기본 정보 ===
+        GUI.Label(new Rect(x + 10, y, width, lineHeight), 
+            $"=== BASIC INFO ===");
+        y += lineHeight;
+        
+        GUI.Label(new Rect(x + 10, y, width, lineHeight), 
+            $"Speed: {controller.currentSpeedKmh:F1} km/h");
+        y += lineHeight;
+        
+        GUI.Label(new Rect(x + 10, y, width, lineHeight), 
+            $"RPM: {controller.engine.currentRPM:F0}");
+        y += lineHeight;
+        
+        GUI.Label(new Rect(x + 10, y, width, lineHeight), 
+            $"Gear: {controller.gearbox.currentGear}");
+        y += lineHeight;
+        
+        GUI.Label(new Rect(x + 10, y, width, lineHeight), 
+            $"Grounded: {controller.groundedWheelCount}/4");
+        y += lineHeight;
+        
+        // === 입력 ===
+        y += 10;
+        GUI.Label(new Rect(x + 10, y, width, lineHeight), 
+            $"=== INPUT ===");
+        y += lineHeight;
+        
+        GUI.Label(new Rect(x + 10, y, width, lineHeight), 
+            $"Steering: {controller.steeringInput:F2}");
+        y += lineHeight;
+        
+        GUI.Label(new Rect(x + 10, y, width, lineHeight), 
+            $"Throttle: {controller.throttleInput:F2}");
+        y += lineHeight;
+        
+        GUI.Label(new Rect(x + 10, y, width, lineHeight), 
+            $"Brake: {controller.brakeInput:F2}");
+        y += lineHeight;
+        
+        // === 엔진 ===
+        y += 10;
+        GUI.Label(new Rect(x + 10, y, width, lineHeight), 
+            $"=== ENGINE ===");
+        y += lineHeight;
+        
+        float torque = controller.engine.CalculateTorque(
+            controller.engine.currentRPM, 
+            controller.throttleInput
+        );
+        GUI.Label(new Rect(x + 10, y, width, lineHeight), 
+            $"Torque: {torque:F0} Nm");
+        y += lineHeight;
+        
+        // === 공기역학 ===
+        y += 10;
+        GUI.Label(new Rect(x + 10, y, width, lineHeight), 
+            $"=== AERODYNAMICS ===");
+        y += lineHeight;
+        
+        GUI.Label(new Rect(x + 10, y, width, lineHeight), 
+            $"Downforce: {controller.aerodynamics.currentDownforce:F0} N");
+        y += lineHeight;
+        
+        GUI.Label(new Rect(x + 10, y, width, lineHeight), 
+            $"Drag: {controller.aerodynamics.currentDrag:F0} N");
+        y += lineHeight;
+        
+        float slipstreamReduction = (1f - controller.aerodynamics.slipstreamFactor) * 100f;
+        GUI.Label(new Rect(x + 10, y, width, lineHeight), 
+            $"Slipstream: {slipstreamReduction:F0}%");
+        y += lineHeight;
+        
+        // === 타이어 상태 ===
+        y += 10;
+        GUI.Label(new Rect(x + 10, y, width, lineHeight), 
+            $"=== TIRES ===");
+        y += lineHeight;
+        
+        DrawTireStatus(controller.frontLeftTire, "FL", x + 10, y, width / 2);
+        DrawTireStatus(controller.frontRightTire, "FR", x + width / 2, y, width / 2);
+        y += lineHeight * 3;
+        
+        DrawTireStatus(controller.rearLeftTire, "RL", x + 10, y, width / 2);
+        DrawTireStatus(controller.rearRightTire, "RR", x + width / 2, y, width / 2);
+    }
+    
+    private void DrawTireStatus(TireModel tire, string label, int x, int y, int width)
+    {
+        if (tire == null) return;
+        
+        int lineHeight = 15;
+        
+        GUI.Label(new Rect(x, y, width, lineHeight), 
+            $"{label}: {tire.data.currentTemperature:F0}°C");
+        y += lineHeight;
+        
+        GUI.Label(new Rect(x, y, width, lineHeight), 
+            $"  Slip: {tire.GetLongitudinalSlip():F2}");
+        y += lineHeight;
+        
+        GUI.Label(new Rect(x, y, width, lineHeight), 
+            $"  Force: {tire.GetCachedForces().total.magnitude:F0}N");
+    }
+}
+```
+
+### 텔레메트리 레코더
+
+```csharp
+/// <summary>
+/// 차량 텔레메트리 기록
+/// </summary>
+public class VehicleTelemetry : MonoBehaviour
+{
+    [Header("References")]
+    public VehicleController controller;
+    
+    [Header("Recording")]
+    public bool isRecording = false;
+    public float sampleRate = 30f; // Hz
+    
+    private List<TelemetryFrame> frames = new List<TelemetryFrame>();
+    private float sampleTimer;
+    
+    void FixedUpdate()
+    {
+        if (!isRecording) return;
+        
+        sampleTimer += Time.fixedDeltaTime;
+        
+        if (sampleTimer >= 1f / sampleRate)
+        {
+            RecordFrame();
+            sampleTimer = 0f;
+        }
+    }
+    
+    private void RecordFrame()
+    {
+        TelemetryFrame frame = new TelemetryFrame
+        {
+            time = Time.time,
+            position = controller.transform.position,
+            velocity = controller.vehicleRigidbody.velocity,
+            speed = controller.currentSpeed,
+            rpm = controller.engine.currentRPM,
+            gear = controller.gearbox.currentGear,
+            throttle = controller.throttleInput,
+            brake = controller.brakeInput,
+            steering = controller.steeringInput,
+            downforce = controller.aerodynamics.currentDownforce,
+            drag = controller.aerodynamics.currentDrag
+        };
+        
+        frames.Add(frame);
+    }
+    
+    [ContextMenu("Start Recording")]
+    public void StartRecording()
+    {
+        isRecording = true;
+        frames.Clear();
+        Debug.Log("[Telemetry] Recording started");
+    }
+    
+    [ContextMenu("Stop Recording")]
+    public void StopRecording()
+    {
+        isRecording = false;
+        Debug.Log($"[Telemetry] Recording stopped. {frames.Count} frames recorded");
+    }
+    
+    [ContextMenu("Export to CSV")]
+    public void ExportToCSV()
+    {
+        string path = Application.dataPath + "/vehicle_telemetry.csv";
+        
+        using (System.IO.StreamWriter writer = new System.IO.StreamWriter(path))
+        {
+            // 헤더
+            writer.WriteLine("Time,PosX,PosY,PosZ,VelX,VelY,VelZ,Speed,RPM,Gear," +
+                "Throttle,Brake,Steering,Downforce,Drag");
+            
+            // 데이터
+            foreach (var frame in frames)
+            {
+                writer.WriteLine(
+                    $"{frame.time:F2}," +
+                    $"{frame.position.x:F2},{frame.position.y:F2},{frame.position.z:F2}," +
+                    $"{frame.velocity.x:F2},{frame.velocity.y:F2},{frame.velocity.z:F2}," +
+                    $"{frame.speed:F2},{frame.rpm:F0},{frame.gear}," +
+                    $"{frame.throttle:F2},{frame.brake:F2},{frame.steering:F2}," +
+                    $"{frame.downforce:F0},{frame.drag:F0}"
+                );
+            }
+        }
+        
+        Debug.Log($"[Telemetry] Exported to: {path}");
+    }
+}
+
+[System.Serializable]
+public struct TelemetryFrame
+{
+    public float time;
+    public Vector3 position;
+    public Vector3 velocity;
+    public float speed;
+    public float rpm;
+    public int gear;
+    public float throttle;
+    public float brake;
+    public float steering;
+    public float downforce;
+    public float drag;
+}
+```
+
+---
+
+## 3.6.11 성능 최적화
+
+### 업데이트 주파수 제어
+
+```csharp
+/// <summary>
+/// 최적화된 차량 컨트롤러
+/// </summary>
+public class OptimizedVehicleController : VehicleController
+{
+    [Header("Optimization")]
+    [Tooltip("타이어 업데이트 주기 (프레임)")]
+    public int tireUpdateInterval = 1; // 매 프레임
+    
+    [Tooltip("공기역학 업데이트 주기 (프레임)")]
+    public int aeroUpdateInterval = 2; // 2 프레임마다
+    
+    [Tooltip("안정성 시스템 업데이트 주기 (프레임)")]
+    public int stabilityUpdateInterval = 3; // 3 프레임마다
+    
+    private int frameCounter = 0;
+    
+    protected override void UpdateVehiclePhysics()
+    {
+        frameCounter++;
+        
+        // 필수 업데이트 (매 프레임)
+        PrePhysicsUpdate();
+        UpdateSteering();
+        UpdateSuspensions();
+        UpdateEngine();
+        
+        // 조건부 업데이트
+        if (frameCounter % tireUpdateInterval == 0)
+        {
+            UpdateTires();
+        }
+        
+        if (frameCounter % aeroUpdateInterval == 0)
+        {
+            UpdateAerodynamics();
+        }
+        
+        UpdateBrakes();
+        ApplyAllForces();
+        
+        if (frameCounter % stabilityUpdateInterval == 0)
+        {
+            ApplyStabilitySystems();
+        }
+        
+        PostPhysicsUpdate();
+    }
+}
+```
+
+### 거리 기반 LOD
+
+```csharp
+/// <summary>
+/// 차량 LOD 시스템
+/// </summary>
+public class VehicleLODSystem : MonoBehaviour
+{
+    [Header("References")]
+    public VehicleController controller;
+    public Camera mainCamera;
+    
+    [Header("LOD Distances")]
+    public float highQualityDistance = 50f;
+    public float mediumQualityDistance = 150f;
+    public float lowQualityDistance = 300f;
+    
+    private VehicleLODLevel currentLOD;
+    
+    void Start()
+    {
+        if (mainCamera == null)
+            mainCamera = Camera.main;
+    }
+    
+    void Update()
+    {
+        UpdateLOD();
+    }
+    
+    private void UpdateLOD()
+    {
+        float distance = Vector3.Distance(
+            transform.position,
+            mainCamera.transform.position
+        );
+        
+        VehicleLODLevel newLOD;
+        
+        if (distance < highQualityDistance)
+            newLOD = VehicleLODLevel.High;
+        else if (distance < mediumQualityDistance)
+            newLOD = VehicleLODLevel.Medium;
+        else if (distance < lowQualityDistance)
+            newLOD = VehicleLODLevel.Low;
+        else
+            newLOD = VehicleLODLevel.VeryLow;
+        
+        if (newLOD != currentLOD)
+        {
+            ApplyLOD(newLOD);
+            currentLOD = newLOD;
+        }
+    }
+    
+    private void ApplyLOD(VehicleLODLevel lod)
+    {
+        switch (lod)
+        {
+            case VehicleLODLevel.High:
+                // 모든 시스템 활성화
+                controller.enabled = true;
+                SetUpdateIntervals(1, 1, 1);
+                break;
+                
+            case VehicleLODLevel.Medium:
+                // 약간 최적화
+                controller.enabled = true;
+                SetUpdateIntervals(1, 2, 3);
+                break;
+                
+            case VehicleLODLevel.Low:
+                // 대폭 최적화
+                controller.enabled = true;
+                SetUpdateIntervals(2, 4, 5);
+                break;
+                
+            case VehicleLODLevel.VeryLow:
+                // 최소한의 시뮬레이션만
+                controller.enabled = false;
+                break;
+        }
+    }
+    
+    private void SetUpdateIntervals(int tire, int aero, int stability)
+    {
+        if (controller is OptimizedVehicleController optimized)
+        {
+            optimized.tireUpdateInterval = tire;
+            optimized.aeroUpdateInterval = aero;
+            optimized.stabilityUpdateInterval = stability;
+        }
+    }
+}
+
+public enum VehicleLODLevel
+{
+    High,      // 근거리: 모든 기능
+    Medium,    // 중거리: 약간 최적화
+    Low,       // 원거리: 대폭 최적화
+    VeryLow    // 매우 원거리: 비활성화
+}
+```
+
+---
+
+## 3.6.12 씬 설정 가이드
+
+### 프리팹 구조
+
+```
+VehiclePrefab
+├─ Body (MeshRenderer)
+├─ Collider (BoxCollider/MeshCollider)
+├─ VehicleController
+│
+├─ Wheels
+│  ├─ FL_Suspension (empty)
+│  │  ├─ FL_Wheel (visual)
+│  │  ├─ SuspensionWheel
+│  │  └─ TireModel
+│  ├─ FR_Suspension
+│  ├─ RL_Suspension
+│  └─ RR_Suspension
+│
+├─ Systems
+│  ├─ Engine (empty + EngineModel)
+│  ├─ Gearbox (empty + GearboxSystem)
+│  ├─ Aero (empty + AerodynamicsModel)
+│  │  ├─ FrontDownforcePoint
+│  │  └─ RearDownforcePoint
+│  ├─ Steering (empty + SteeringSystem)
+│  └─ Brakes (empty + BrakeSystem)
+│
+└─ Effects
+   ├─ Audio
+   ├─ Particles (tire smoke, exhaust)
+   └─ Lights
+```
+
+### Inspector 설정 순서
+
+```csharp
+/// <summary>
+/// 차량 설정 헬퍼 (에디터 전용)
+/// </summary>
+#if UNITY_EDITOR
+[CustomEditor(typeof(VehicleController))]
+public class VehicleControllerEditor : Editor
+{
+    public override void OnInspectorGUI()
+    {
+        DrawDefaultInspector();
+        
+        VehicleController controller = (VehicleController)target;
+        
+        EditorGUILayout.Space();
+        EditorGUILayout.LabelField("=== Quick Setup ===", EditorStyles.boldLabel);
+        
+        // 1. 자동 참조 찾기
+        if (GUILayout.Button("Auto-Find Components"))
+        {
+            AutoFindComponents(controller);
+        }
+        
+        // 2. 검증
+        if (GUILayout.Button("Validate Setup"))
+        {
+            controller.ValidateSetup();
+        }
+        
+        // 3. 무게 중심 표시
+        if (GUILayout.Button("Show Center of Mass"))
+        {
+            Selection.activeGameObject = controller.gameObject;
+            SceneView.lastActiveSceneView.pivot = 
+                controller.transform.TransformPoint(controller.vehicleRigidbody.centerOfMass);
+        }
+        
+        // 4. 프리셋 적용
+        EditorGUILayout.Space();
+        EditorGUILayout.LabelField("Apply Preset:", EditorStyles.boldLabel);
+        
+        EditorGUILayout.BeginHorizontal();
+        if (GUILayout.Button("Hatchback"))
+            ApplyPreset(controller, VehiclePreset.Hatchback);
+        if (GUILayout.Button("Sport"))
+            ApplyPreset(controller, VehiclePreset.Sport);
+        if (GUILayout.Button("Race"))
+            ApplyPreset(controller, VehiclePreset.Race);
+        EditorGUILayout.EndHorizontal();
+        
+        // 런타임 정보
+        if (Application.isPlaying)
+        {
+            EditorGUILayout.Space();
+            EditorGUILayout.LabelField("=== Runtime Info ===", EditorStyles.boldLabel);
+            EditorGUILayout.LabelField($"Speed: {controller.currentSpeedKmh:F1} km/h");
+            EditorGUILayout.LabelField($"Grounded: {controller.groundedWheelCount}/4");
+            
+            Repaint();
+        }
+    }
+    
+    private void AutoFindComponents(VehicleController controller)
+    {
+        // Rigidbody
+        if (controller.vehicleRigidbody == null)
+            controller.vehicleRigidbody = controller.GetComponent<Rigidbody>();
+        
+        // 바퀴들 자동 찾기
+        var wheels = controller.GetComponentsInChildren<SuspensionWheel>();
+        if (wheels.Length >= 4)
+        {
+            controller.frontLeftWheel = wheels[0];
+            controller.frontRightWheel = wheels[1];
+            controller.rearLeftWheel = wheels[2];
+            controller.rearRightWheel = wheels[3];
+        }
+        
+        // 타이어들 자동 찾기
+        var tires = controller.GetComponentsInChildren<TireModel>();
+        if (tires.Length >= 4)
+        {
+            controller.frontLeftTire = tires[0];
+            controller.frontRightTire = tires[1];
+            controller.rearLeftTire = tires[2];
+            controller.rearRightTire = tires[3];
+        }
+        
+        // 시스템들
+        controller.engine = controller.GetComponentInChildren<EngineModel>();
+        controller.gearbox = controller.GetComponentInChildren<GearboxSystem>();
+        controller.aerodynamics = controller.GetComponentInChildren<AerodynamicsModel>();
+        controller.steering = controller.GetComponentInChildren<SteeringSystem>();
+        controller.brakes = controller.GetComponentInChildren<BrakeSystem>();
+        
+        EditorUtility.SetDirty(controller);
+        Debug.Log("[VehicleController] Components auto-found!");
+    }
+    
+    private void ApplyPreset(VehicleController controller, VehiclePreset preset)
+    {
+        // 프리셋에 따라 VehicleData 설정
+        // (실제로는 ScriptableObject 생성 및 할당)
+        Debug.Log($"[VehicleController] Applied {preset} preset");
+    }
+}
+
+public enum VehiclePreset
+{
+    Hatchback,
+    Sport,
+    Race
+}
+#endif
+```
+
+### 씬 설정 체크리스트
+
+```
+차량 설정 단계별 가이드:
+
+1. GameObject 생성
+   ☐ 빈 GameObject 생성 ("Vehicle")
+   ☐ Rigidbody 추가
+   ☐ VehicleController 추가
+
+2. 차체 설정
+   ☐ Body 메쉬 추가 (자식)
+   ☐ Collider 설정 (BoxCollider 권장)
+   ☐ 무게 중심 조정 (낮게)
+
+3. 바퀴 설정 (4개)
+   ☐ Suspension Anchor 생성 (차체에 부착)
+   ☐ SuspensionWheel 컴포넌트 추가
+   ☐ TireModel 컴포넌트 추가
+   ☐ 휠 비주얼 메쉬 배치
+
+4. 시스템 설정
+   ☐ Engine GameObject + EngineModel
+   ☐ Gearbox GameObject + GearboxSystem
+   ☐ Aero GameObject + AerodynamicsModel
+   ☐ Steering GameObject + SteeringSystem
+   ☐ Brakes GameObject + BrakeSystem
+
+5. 데이터 할당
+   ☐ VehicleData ScriptableObject 생성
+   ☐ SuspensionData 생성 및 할당
+   ☐ TireData 생성 및 할당
+   ☐ EngineData 생성 및 할당
+   ☐ AeroData 생성 및 할당
+
+6. 참조 연결
+   ☐ VehicleController에 모든 참조 할당
+   ☐ "Auto-Find Components" 버튼 클릭
+   ☐ "Validate Setup" 버튼으로 검증
+
+7. 물리 설정
+   ☐ Rigidbody Mass 확인
+   ☐ Center of Mass 확인
+   ☐ Collision Detection = Continuous Dynamic
+   ☐ Interpolation = Interpolate
+
+8. 레이어 설정
+   ☐ Vehicle 레이어 생성
+   ☐ Ground 레이어 생성
+   ☐ Physics → Layer Collision Matrix 설정
+
+9. 테스트
+   ☐ 평지에서 주행 테스트
+   ☐ 가속/제동 테스트
+   ☐ 조향 테스트
+   ☐ 점프 후 착지 테스트
+```
+
+---
+
+## 3.6.13 문제 해결 가이드
+
+### 일반적인 문제들
+
+**문제 1: 차가 뒤집어짐**
+
+```
+증상:
+- 코너링 시 쉽게 뒤집어짐
+- 점프 후 공중에서 회전
+
+원인:
+1. 무게 중심이 너무 높음
+2. 관성 텐서 설정 오류
+3. 과도한 서스펜션 힘
+
+해결:
+1. Center of Mass Y값을 -0.3 ~ -0.5로 낮춤
+2. Rigidbody.automaticInertiaTensor = false
+3. CalculateInertiaTensor() 함수 확인
+4. RolloverPrevention 시스템 추가
+```
+
+**문제 2: 차가 떨림 (Jittering)**
+
+```
+증상:
+- 정지 상태에서 미세하게 떨림
+- 고속에서 불안정
+
+원인:
+1. Fixed Timestep이 너무 큼
+2. 서스펜션 힘이 과도함
+3. 타이어 힘 계산 오류
+
+해결:
+1. Fixed Timestep = 0.01초 (100Hz)
+2. 서스펜션 Force Smoothing 활성화
+3. 타이어 힘에 클램핑 추가
+4. Rigidbody.angularDrag = 0.5
+```
+
+**문제 3: 구동 휠에 토크가 안 들어감**
+
+```
+증상:
+- 스로틀을 밟아도 가속 안됨
+- 엔진 RPM만 올라감
+
+원인:
+1. DriveType 설정 오류
+2. 타이어 힘 적용 안됨
+3. 기어가 중립
+
+해결:
+1. VehicleData.driveType 확인 (RWD/FWD/AWD)
+2. ApplyDriveTorque() 함수 디버깅
+3. 기어박스 상태 확인
+4. 타이어가 접지되어 있는지 확인
+```
+
+**문제 4: 한쪽으로 쏠림**
+
+```
+증상:
+- 직진 시 한쪽으로 계속 쏠림
+- 조향하지 않아도 회전
+
+원인:
+1. 무게 중심이 중앙이 아님
+2. 바퀴 위치 비대칭
+3. 서스펜션 설정 차이
+
+해결:
+1. Center of Mass X, Z = 0
+2. 좌우 바퀴 대칭 배치 확인
+3. 모든 바퀴에 같은 SuspensionData 사용
+4. ESP 시스템 활성화
+```
+
+**문제 5: 성능 문제 (낮은 FPS)**
+
+```
+증상:
+- 차량이 많으면 FPS 하락
+- FixedUpdate에서 시간 소모
+
+원인:
+1. 너무 많은 계산
+2. 최적화 안됨
+3. 불필요한 업데이트
+
+해결:
+1. OptimizedVehicleController 사용
+2. LOD 시스템 구현
+3. 업데이트 주파수 조절
+4. 프로파일러로 병목 지점 확인
+```
+
+### 디버그 모드
+
+```csharp
+/// <summary>
+/// 차량 디버그 모드
+/// </summary>
+public class VehicleDebugMode : MonoBehaviour
+{
+    public VehicleController controller;
+    public bool debugMode = false;
+    
+    void OnDrawGizmos()
+    {
+        if (!debugMode || controller == null) return;
+        
+        // 1. 무게 중심
+        DrawCenterOfMass();
+        
+        // 2. 서스펜션 레이
+        DrawSuspensionRays();
+        
+        // 3. 타이어 힘 벡터
+        DrawTireForces();
+        
+        // 4. 속도 벡터
+        DrawVelocityVector();
+        
+        // 5. 바퀴 접지 상태
+        DrawWheelStatus();
+    }
+    
+    private void DrawCenterOfMass()
+    {
+        Vector3 com = controller.transform.TransformPoint(
+            controller.vehicleRigidbody.centerOfMass
+        );
+        
+        Gizmos.color = Color.red;
+        Gizmos.DrawSphere(com, 0.1f);
+        
+        #if UNITY_EDITOR
+        UnityEditor.Handles.Label(com, "CoM");
+        #endif
+    }
+    
+    private void DrawSuspensionRays()
+    {
+        foreach (var wheel in controller.allWheels)
+        {
+            if (wheel == null) continue;
+            
+            Vector3 start = wheel.suspensionAnchor.position;
+            Vector3 end = start + (-wheel.suspensionAnchor.up) * 
+                (wheel.data.restLength + wheel.data.maxExtension);
+            
+            Gizmos.color = wheel.isGrounded ? Color.green : Color.red;
+            Gizmos.DrawLine(start, end);
+            
+            if (wheel.isGrounded)
+            {
+                Gizmos.DrawWireSphere(wheel.contactPoint, 0.05f);
+            }
+        }
+    }
+    
+    private void DrawTireForces()
+    {
+        if (!Application.isPlaying) return;
+        
+        foreach (var tire in controller.allTires)
+        {
+            if (tire == null || tire.suspensionWheel == null) continue;
+            if (!tire.suspensionWheel.isGrounded) continue;
+            
+            Vector3 contactPoint = tire.suspensionWheel.contactPoint;
+            TireForces forces = tire.GetCachedForces();
+            
+            // 종방향 힘 (파란색)
+            Gizmos.color = Color.blue;
+            Gizmos.DrawRay(contactPoint, forces.longitudinal.normalized * 0.5f);
+            
+            // 횡방향 힘 (빨간색)
+            Gizmos.color = Color.red;
+            Gizmos.DrawRay(contactPoint, forces.lateral.normalized * 0.5f);
+            
+            // 총 힘 (노란색)
+            Gizmos.color = Color.yellow;
+            Gizmos.DrawRay(contactPoint, forces.total.normalized * 0.7f);
+        }
+    }
+    
+    private void DrawVelocityVector()
+    {
+        if (!Application.isPlaying) return;
+        
+        Vector3 position = controller.transform.position;
+        Vector3 velocity = controller.vehicleRigidbody.velocity;
+        
+        Gizmos.color = Color.cyan;
+        Gizmos.DrawRay(position, velocity.normalized * 2f);
+        
+        #if UNITY_EDITOR
+        UnityEditor.Handles.Label(position + Vector3.up * 2f, 
+            $"{controller.currentSpeedKmh:F0} km/h");
+        #endif
+    }
+    
+    private void DrawWheelStatus()
+    {
+        for (int i = 0; i < controller.allWheels.Length; i++)
+        {
+            var wheel = controller.allWheels[i];
+            if (wheel == null) continue;
+            
+            Vector3 pos = wheel.transform.position;
+            Color color = wheel.isGrounded ? Color.green : Color.red;
+            
+            Gizmos.color = color;
+            Gizmos.DrawWireSphere(pos, 0.15f);
+        }
+    }
+}
+```
+
+---
+
+## 3.6.14 테스트 시나리오
+
+### 자동 테스트 스위트
+
+```csharp
+/// <summary>
+/// 차량 자동 테스트
+/// </summary>
+public class VehicleTestSuite : MonoBehaviour
+{
+    public VehicleController controller;
+    
+    [Header("Test Settings")]
+    public bool runTestsOnStart = false;
+    
+    void Start()
+    {
+        if (runTestsOnStart)
+        {
+            StartCoroutine(RunAllTests());
+        }
+    }
+    
+    private IEnumerator RunAllTests()
+    {
+        Debug.Log("=== Starting Vehicle Tests ===");
+        
+        yield return StartCoroutine(Test_Initialization());
+        yield return new WaitForSeconds(1f);
+        
+        yield return StartCoroutine(Test_Acceleration());
+        yield return new WaitForSeconds(1f);
+        
+        yield return StartCoroutine(Test_Braking());
+        yield return new WaitForSeconds(1f);
+        
+        yield return StartCoroutine(Test_Cornering());
+        yield return new WaitForSeconds(1f);
+        
+        yield return StartCoroutine(Test_Jump());
+        
+        Debug.Log("=== All Tests Complete ===");
+    }
+    
+    private IEnumerator Test_Initialization()
+    {
+        Debug.Log("[Test] Initialization...");
+        
+        // 모든 컴포넌트가 있는지 확인
+        Assert.IsNotNull(controller.vehicleRigidbody, "Rigidbody missing");
+        Assert.IsNotNull(controller.vehicleData, "VehicleData missing");
+        Assert.AreEqual(4, controller.allWheels.Length, "Should have 4 wheels");
+        
+        Debug.Log("[Test] ✓ Initialization passed");
+        yield return null;
+    }
+    
+    private IEnumerator Test_Acceleration()
+    {
+        Debug.Log("[Test] Acceleration...");
+        
+        float startSpeed = controller.currentSpeed;
+        
+        // 5초간 가속
+        controller.throttleInput = 1f;
+        yield return new WaitForSeconds(5f);
+        controller.throttleInput = 0f;
+        
+        float endSpeed = controller.currentSpeed;
+        
+        Assert.IsTrue(endSpeed > startSpeed + 10f, "Should accelerate");
+        
+        Debug.Log($"[Test] ✓ Acceleration: {startSpeed:F1} → {endSpeed:F1} m/s");
+    }
+    
+    private IEnumerator Test_Braking()
+    {
+        Debug.Log("[Test] Braking...");
+        
+        // 먼저 속도를 올림
+        controller.throttleInput = 1f;
+        yield return new WaitForSeconds(3f);
+        
+        float startSpeed = controller.currentSpeed;
+        
+        // 브레이크
+        controller.throttleInput = 0f;
+        controller.brakeInput = 1f;
+        yield return new WaitForSeconds(3f);
+        controller.brakeInput = 0f;
+        
+        float endSpeed = controller.currentSpeed;
+        
+        Assert.IsTrue(endSpeed < startSpeed * 0.5f, "Should brake");
+        
+        Debug.Log($"[Test] ✓ Braking: {startSpeed:F1} → {endSpeed:F1} m/s");
+    }
+    
+    private IEnumerator Test_Cornering()
+    {
+        Debug.Log("[Test] Cornering...");
+        
+        // 속도를 올림
+        controller.throttleInput = 0.7f;
+        yield return new WaitForSeconds(3f);
+        
+        Vector3 startPosition = controller.transform.position;
+        
+        // 좌회전
+        controller.steeringInput = -1f;
+        yield return new WaitForSeconds(2f);
+        controller.steeringInput = 0f;
+        controller.throttleInput = 0f;
+        
+        Vector3 endPosition = controller.transform.position;
+        float lateralMovement = Vector3.Distance(
+            new Vector3(startPosition.x, 0, startPosition.z),
+            new Vector3(endPosition.x, 0, endPosition.z)
+        );
+        
+        Assert.IsTrue(lateralMovement > 5f, "Should turn");
+        Assert.IsTrue(controller.groundedWheelCount >= 3, "Should stay grounded");
+        
+        Debug.Log($"[Test] ✓ Cornering: moved {lateralMovement:F1}m");
+    }
+    
+    private IEnumerator Test_Jump()
+    {
+        Debug.Log("[Test] Jump landing...");
+        
+        // 차량을 공중에 배치
+        controller.transform.position += Vector3.up * 2f;
+        controller.vehicleRigidbody.velocity = Vector3.zero;
+        
+        yield return new WaitForSeconds(0.5f);
+        
+        // 착지 대기
+        float waitTime = 0f;
+        while (!controller.isGrounded && waitTime < 5f)
+        {
+            waitTime += Time.deltaTime;
+            yield return null;
+        }
+        
+        Assert.IsTrue(controller.isGrounded, "Should land");
+        Assert.IsTrue(controller.groundedWheelCount >= 3, "Most wheels should be grounded");
+        
+        Debug.Log($"[Test] ✓ Jump landing: grounded in {waitTime:F2}s");
+    }
+}
+
+// 간단한 Assert 헬퍼
+public static class Assert
+{
+    public static void IsNotNull(object obj, string message)
+    {
+        if (obj == null)
+            Debug.LogError($"[Assert Failed] {message}");
+    }
+    
+    public static void AreEqual(int expected, int actual, string message)
+    {
+        if (expected != actual)
+            Debug.LogError($"[Assert Failed] {message}: expected {expected}, got {actual}");
+    }
+    
+    public static void IsTrue(bool condition, string message)
+    {
+        if (!condition)
+            Debug.LogError($"[Assert Failed] {message}");
+    }
+}
+```
+
+---
+
+## 요약 체크리스트
+
+### 필수 구현
+- [ ] `VehicleController` 메인 클래스
+- [ ] `VehicleData` ScriptableObject
+- [ ] 초기화 시스템 (`InitializeVehicle`)
+- [ ] 물리 업데이트 파이프라인 (`UpdateVehiclePhysics`)
+- [ ] 입력 처리 (`UpdateInput`)
+- [ ] 힘 통합 (`ApplyAllForces`)
+- [ ] Rigidbody 설정 (`ConfigureRigidbody`)
+
+### 권장 구현
+- [ ] 안정성 시스템 (ESP, TCS, ABS)
+- [ ] 무게 중심 관리
+- [ ] 롤오버 방지
+- [ ] 경사로 중력 보정
+- [ ] LOD 시스템
+
+### 디버깅 도구
+- [ ] 디버그 UI (`VehicleDebugUI`)
+- [ ] 텔레메트리 레코더
+- [ ] Gizmos 시각화
+- [ ] 에디터 확장
+- [ ] 자동 테스트 스위트
+
+### 최적화
+- [ ] 업데이트 주파수 제어
+- [ ] 거리 기반 LOD
+- [ ] 배치 처리 (슬립스트림 등)
+- [ ] 불필요한 계산 제거
+
+### 설정
+- [ ] 프리팹 구조 확립
+- [ ] 씬 설정 완료
+- [ ] 레이어 및 물리 설정
+- [ ] 에디터 헬퍼 도구
+
+---
+
+## 다음 단계
+
+이제 차체 통합이 완료되었으므로:
+
+1. **4.0 카메라 시스템** - 차량 추적 카메라
+2. **5.0 입력 시스템** - 고급 입력 처리 (Unity Input System)
+3. **6.0 AI 시스템** - 상대 차량 AI
+4. **7.0 사운드 시스템** - 엔진음, 타이어 소리
+5. **8.0 VFX 시스템** - 파티클, 시각 효과
+6. **9.0 UI 시스템** - HUD, 미니맵
+7. **10.0 네트워크** - 멀티플레이어 (선택)
+
+---
+
+**문서 버전**: 1.0  
+**작성일**: 2024  
+**상태**: 구현 준비 완료 ✅  
+**핵심**: 모든 물리 시스템을 하나의 Rigidbody에 통합
+            

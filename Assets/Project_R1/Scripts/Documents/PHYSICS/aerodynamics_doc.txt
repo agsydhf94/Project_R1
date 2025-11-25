@@ -1,0 +1,2175 @@
+# 3.5 공기역학 (Aerodynamics)
+
+## 목차
+- [3.5.1 개요 및 레이싱 게임에서의 중요성](#351-개요-및-레이싱-게임에서의-중요성)
+- [3.5.2 공기역학 데이터 구조](#352-공기역학-데이터-구조)
+- [3.5.3 다운포스 시스템](#353-다운포스-시스템)
+- [3.5.4 드래그 (공기저항)](#354-드래그-공기저항)
+- [3.5.5 슬립스트림 (Slipstream/Drafting)](#355-슬립스트림-slipstreamdrafting)
+- [3.5.6 차체 피칭 효과](#356-차체-피칭-효과)
+- [3.5.7 측풍 효과](#357-측풍-효과)
+- [3.5.8 DRS (Drag Reduction System)](#358-drs-drag-reduction-system)
+- [3.5.9 통합 및 디버깅](#359-통합-및-디버깅)
+- [3.5.10 성능 최적화](#3510-성능-최적화)
+
+---
+
+## 3.5.1 개요 및 레이싱 게임에서의 중요성
+
+### 공기역학의 역할
+
+```
+레이싱에서 공기역학이 중요한 이유:
+
+속도별 영향력:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+속도        다운포스    드래그      중요도
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+50 km/h     ░░░░        ░░░░        낮음
+100 km/h    ██░░        ██░░        중간
+150 km/h    ████        ████        높음
+200 km/h    ████████    ████████    매우 높음
+250 km/h+   ████████████████████    결정적
+
+공식: Force ∝ velocity²
+속도 2배 → 힘 4배
+속도 3배 → 힘 9배
+```
+
+### Grid Legends 스타일 설계 원칙
+
+```
+1. 체감 가능한 효과
+   ├─ 다운포스: 고속 코너링 안정성 향상
+   ├─ 드래그: 최고속 제한
+   └─ 슬립스트림: 추월 기회 창출
+
+2. 전략적 깊이
+   ├─ 다운포스 vs 최고속 트레이드오프
+   ├─ DRS 활용 타이밍
+   └─ 슬립스트림 라인 선택
+
+3. 시각적 피드백
+   ├─ 슬립스트림 이펙트
+   ├─ DRS 활성화 표시
+   └─ 차체 피칭 애니메이션
+
+4. 게임플레이 밸런스
+   ├─ 너무 현실적 = 어려움
+   ├─ 너무 단순 = 지루함
+   └─ 적절한 중간 지점
+```
+
+### 구현 목표
+
+```
+핵심 시스템:
+1. ✅ 다운포스 (Downforce)
+2. ✅ 드래그 (Drag)
+3. ✅ 슬립스트림 (Slipstream)
+4. ⚙️ 차체 피칭 (Pitch Effect)
+5. ⚙️ 측풍 (Crosswind)
+6. ⚙️ DRS (선택)
+
+선택적 시스템:
+- 지면 효과 (Ground Effect)
+- 더티 에어 (Dirty Air)
+- 보텍스 (Vortex)
+```
+
+---
+
+## 3.5.2 공기역학 데이터 구조
+
+### ScriptableObject 정의
+
+```csharp
+using UnityEngine;
+
+[CreateAssetMenu(fileName = "AeroData", menuName = "Vehicle/Aerodynamics Data")]
+public class AerodynamicsData : ScriptableObject
+{
+    [Header("=== Downforce ===")]
+    [Tooltip("전체 다운포스 계수 (Cl)")]
+    [Range(0f, 5f)]
+    public float downforceCoefficient = 2.5f;
+    
+    [Tooltip("전방 다운포스 비율 (0~1)")]
+    [Range(0f, 1f)]
+    public float frontDownforceRatio = 0.35f; // 35% 앞, 65% 뒤
+    
+    [Tooltip("차량 정면 투영 면적 (m²)")]
+    [Range(1f, 3f)]
+    public float frontalArea = 2.0f;
+    
+    [Header("=== Drag ===")]
+    [Tooltip("드래그 계수 (Cd)")]
+    [Range(0.2f, 1.0f)]
+    public float dragCoefficient = 0.35f;
+    
+    [Tooltip("드래그 중심 높이 (차체 중심 기준, m)")]
+    [Range(-0.5f, 0.5f)]
+    public float dragCenterHeight = 0.2f;
+    
+    [Header("=== Slipstream ===")]
+    [Tooltip("슬립스트림 활성화")]
+    public bool enableSlipstream = true;
+    
+    [Tooltip("슬립스트림 최대 드래그 감소 비율")]
+    [Range(0f, 0.5f)]
+    public float slipstreamMaxReduction = 0.35f; // 35% 감소
+    
+    [Tooltip("슬립스트림 최대 거리 (m)")]
+    [Range(5f, 30f)]
+    public float slipstreamMaxDistance = 20f;
+    
+    [Tooltip("슬립스트림 페이드 시작 거리 (m)")]
+    [Range(2f, 15f)]
+    public float slipstreamFadeStart = 8f;
+    
+    [Tooltip("슬립스트림 폭 (m)")]
+    [Range(2f, 8f)]
+    public float slipstreamWidth = 4f;
+    
+    [Header("=== Pitch Sensitivity ===")]
+    [Tooltip("피치 각도가 다운포스에 미치는 영향")]
+    [Range(0f, 2f)]
+    public float pitchSensitivity = 1.0f;
+    
+    [Tooltip("최대 유효 피치 각도 (도)")]
+    [Range(5f, 20f)]
+    public float maxEffectivePitch = 10f;
+    
+    [Header("=== Ground Effect ===")]
+    [Tooltip("지면 효과 활성화")]
+    public bool enableGroundEffect = true;
+    
+    [Tooltip("지면 효과 강도")]
+    [Range(0f, 2f)]
+    public float groundEffectStrength = 0.5f;
+    
+    [Tooltip("지면 효과 작동 최대 높이 (m)")]
+    [Range(0.1f, 0.5f)]
+    public float groundEffectHeight = 0.2f;
+    
+    [Header("=== DRS ===")]
+    [Tooltip("DRS 사용 가능")]
+    public bool hasDRS = false;
+    
+    [Tooltip("DRS 활성화 시 드래그 감소 비율")]
+    [Range(0.1f, 0.4f)]
+    public float drsReduction = 0.25f; // 25% 감소
+    
+    [Tooltip("DRS 활성화 시 다운포스 감소 비율")]
+    [Range(0.1f, 0.3f)]
+    public float drsDownforceLoss = 0.15f; // 15% 감소
+    
+    [Header("=== Crosswind ===")]
+    [Tooltip("측풍 민감도")]
+    [Range(0f, 2f)]
+    public float crosswindSensitivity = 0.8f;
+    
+    [Header("=== Physical Constants ===")]
+    [Tooltip("공기 밀도 (kg/m³)")]
+    public float airDensity = 1.225f; // 해수면, 15°C
+}
+```
+
+### 프리셋 예시
+
+```
+차량 타입별 공기역학 설정:
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+타입          Cl    Cd    전방비율  DRS  비고
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+해치백        1.0   0.35   40%     ✗   약한 다운포스
+스포츠 쿠페   2.0   0.32   38%     ✗   균형잡힌 설정
+슈퍼카        3.0   0.30   35%     ✓   강한 다운포스
+GT3 레이스카  4.0   0.45   35%     ✓   극단적 다운포스
+포뮬러        5.0   0.80   30%     ✓   최대 다운포스
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+트레이드오프:
+- 높은 Cl (다운포스) = 코너링 빠름, 최고속 낮음
+- 낮은 Cd (드래그) = 최고속 높음, 안정성 낮음
+```
+
+---
+
+## 3.5.3 다운포스 시스템
+
+### 3.1 이론 배경
+
+```
+다운포스 공식:
+
+F_down = 0.5 × ρ × v² × A × Cl
+
+여기서:
+F_down = 다운포스 (N)
+ρ = 공기 밀도 (kg/m³)
+v = 차량 속도 (m/s)
+A = 정면 투영 면적 (m²)
+Cl = 다운포스 계수 (무차원)
+
+예시:
+속도 200 km/h (55.6 m/s)
+Cl = 2.5
+A = 2.0 m²
+ρ = 1.225 kg/m³
+
+F_down = 0.5 × 1.225 × 55.6² × 2.0 × 2.5
+       = 9,462 N (약 965 kg의 하중!)
+```
+
+### 3.2 구현
+
+```csharp
+public class AerodynamicsModel : MonoBehaviour
+{
+    [Header("References")]
+    public AerodynamicsData data;
+    public Rigidbody vehicleRigidbody;
+    public Transform centerOfPressure; // 공기역학 중심
+    
+    [Header("Downforce Application Points")]
+    public Transform frontDownforcePoint;
+    public Transform rearDownforcePoint;
+    
+    [Header("Runtime State")]
+    [ReadOnly] public float currentDownforce;
+    [ReadOnly] public float currentDrag;
+    [ReadOnly] public float slipstreamFactor = 1f; // 1 = 없음, 0.7 = 30% 감소
+    [ReadOnly] public bool isDrsActive = false;
+    
+    // 캐시
+    private Vector3 relativeVelocity;
+    private float speedSquared;
+    
+    void FixedUpdate()
+    {
+        float dt = Time.fixedDeltaTime;
+        
+        // 1. 상대 속도 계산
+        CalculateRelativeVelocity();
+        
+        // 2. 다운포스 계산 및 적용
+        ApplyDownforce();
+        
+        // 3. 드래그 계산 및 적용
+        ApplyDrag();
+        
+        // 4. 슬립스트림 체크 (다른 차량과의 상호작용)
+        UpdateSlipstream();
+    }
+    
+    /// <summary>
+    /// 상대 속도 계산 (측풍 포함)
+    /// </summary>
+    private void CalculateRelativeVelocity()
+    {
+        // 차량 속도 (월드 좌표)
+        Vector3 vehicleVelocity = vehicleRigidbody.velocity;
+        
+        // 바람 속도 (추후 날씨 시스템 연동)
+        Vector3 windVelocity = Vector3.zero; // 기본적으로 바람 없음
+        
+        // 상대 속도 = 차량 속도 - 바람 속도
+        relativeVelocity = vehicleVelocity - windVelocity;
+        
+        // 속도 제곱 (자주 사용됨)
+        speedSquared = relativeVelocity.sqrMagnitude;
+    }
+}
+```
+
+### 3.3 다운포스 적용
+
+```csharp
+/// <summary>
+/// 최적화된 공기역학 모델
+/// </summary>
+public class OptimizedAerodynamicsModel : AerodynamicsModel
+{
+    // 캐싱
+    private Vector3 cachedRelativeVelocity;
+    private float cachedSpeedSquared;
+    private int lastUpdateFrame;
+    
+    // 업데이트 주파수 제어
+    [Header("Optimization")]
+    [Tooltip("슬립스트림 체크 주파수 (프레임)")]
+    public int slipstreamCheckInterval = 5; // 매 5 프레임
+    
+    private int frameCounter;
+    
+    protected override void FixedUpdate()
+    {
+        // 같은 프레임에서 중복 계산 방지
+        if (lastUpdateFrame == Time.frameCount)
+            return;
+        
+        lastUpdateFrame = Time.frameCount;
+        frameCounter++;
+        
+        // 기본 공기역학 (매 프레임)
+        CalculateRelativeVelocity();
+        ApplyDownforce();
+        ApplyDrag();
+        
+        // 슬립스트림 (주기적)
+        if (frameCounter % slipstreamCheckInterval == 0)
+        {
+            UpdateSlipstream();
+        }
+        else
+        {
+            // 이전 값 유지하되 부드럽게 감쇠
+            slipstreamFactor = Mathf.Lerp(slipstreamFactor, 1f, Time.fixedDeltaTime);
+        }
+    }
+}
+```
+
+### 10.2 LOD (Level of Detail) 시스템
+
+```csharp
+/// <summary>
+/// 카메라 거리에 따른 공기역학 LOD
+/// </summary>
+public class AerodynamicsLOD : MonoBehaviour
+{
+    [Header("References")]
+    public AerodynamicsModel aeroModel;
+    public Camera mainCamera;
+    
+    [Header("LOD Settings")]
+    [Tooltip("전체 시뮬레이션 최대 거리 (m)")]
+    public float fullSimulationDistance = 100f;
+    
+    [Tooltip("단순화 시뮬레이션 최대 거리 (m)")]
+    public float simplifiedDistance = 300f;
+    
+    private AeroLODLevel currentLOD;
+    
+    void Update()
+    {
+        if (mainCamera == null)
+            mainCamera = Camera.main;
+        
+        UpdateLOD();
+    }
+    
+    private void UpdateLOD()
+    {
+        float distance = Vector3.Distance(transform.position, mainCamera.transform.position);
+        
+        AeroLODLevel newLOD;
+        
+        if (distance < fullSimulationDistance)
+        {
+            newLOD = AeroLODLevel.Full;
+        }
+        else if (distance < simplifiedDistance)
+        {
+            newLOD = AeroLODLevel.Simplified;
+        }
+        else
+        {
+            newLOD = AeroLODLevel.Minimal;
+        }
+        
+        if (newLOD != currentLOD)
+        {
+            currentLOD = newLOD;
+            ApplyLOD(newLOD);
+        }
+    }
+    
+    private void ApplyLOD(AeroLODLevel lod)
+    {
+        switch (lod)
+        {
+            case AeroLODLevel.Full:
+                // 모든 기능 활성화
+                aeroModel.enabled = true;
+                aeroModel.data.enableSlipstream = true;
+                aeroModel.data.enableGroundEffect = true;
+                break;
+                
+            case AeroLODLevel.Simplified:
+                // 기본 기능만
+                aeroModel.enabled = true;
+                aeroModel.data.enableSlipstream = false;
+                aeroModel.data.enableGroundEffect = false;
+                break;
+                
+            case AeroLODLevel.Minimal:
+                // 비활성화 (타이어/엔진만 시뮬레이션)
+                aeroModel.enabled = false;
+                break;
+        }
+    }
+}
+
+public enum AeroLODLevel
+{
+    Full,        // 모든 기능
+    Simplified,  // 기본 기능만
+    Minimal      // 비활성화
+}
+```
+
+### 10.3 배치 처리
+
+```csharp
+/// <summary>
+/// 여러 차량의 슬립스트림을 한 번에 계산
+/// </summary>
+public class SlipstreamBatchProcessor : MonoBehaviour
+{
+    private static SlipstreamBatchProcessor instance;
+    
+    [Header("Vehicles")]
+    private List<AerodynamicsModel> vehicles = new List<AerodynamicsModel>();
+    
+    void Awake()
+    {
+        instance = this;
+    }
+    
+    public static void RegisterVehicle(AerodynamicsModel vehicle)
+    {
+        if (instance != null)
+        {
+            instance.vehicles.Add(vehicle);
+        }
+    }
+    
+    public static void UnregisterVehicle(AerodynamicsModel vehicle)
+    {
+        if (instance != null)
+        {
+            instance.vehicles.Remove(vehicle);
+        }
+    }
+    
+    void FixedUpdate()
+    {
+        // 모든 차량 간의 슬립스트림을 한 번에 계산
+        ProcessSlipstreams();
+    }
+    
+    private void ProcessSlipstreams()
+    {
+        int count = vehicles.Count;
+        
+        for (int i = 0; i < count; i++)
+        {
+            if (vehicles[i] == null) continue;
+            
+            float maxSlipstream = 0f;
+            
+            // 다른 모든 차량과 비교
+            for (int j = 0; j < count; j++)
+            {
+                if (i == j || vehicles[j] == null) continue;
+                
+                // 슬립스트림 강도 계산 (간소화)
+                float strength = CalculateSlipstreamBatch(vehicles[i], vehicles[j]);
+                maxSlipstream = Mathf.Max(maxSlipstream, strength);
+            }
+            
+            // 결과 적용
+            float targetFactor = 1f - (maxSlipstream * vehicles[i].data.slipstreamMaxReduction);
+            vehicles[i].slipstreamFactor = Mathf.Lerp(
+                vehicles[i].slipstreamFactor,
+                targetFactor,
+                Time.fixedDeltaTime * 3f
+            );
+        }
+    }
+    
+    private float CalculateSlipstreamBatch(AerodynamicsModel follower, AerodynamicsModel leader)
+    {
+        // 간소화된 슬립스트림 계산 (거리 + 각도만)
+        Vector3 toLeader = leader.transform.position - follower.transform.position;
+        float distance = toLeader.magnitude;
+        
+        if (distance > follower.data.slipstreamMaxDistance)
+            return 0f;
+        
+        float dotProduct = Vector3.Dot(follower.transform.forward, toLeader.normalized);
+        
+        if (dotProduct < 0.7f)
+            return 0f;
+        
+        // 거리 감쇠
+        float distanceStrength = 1f - (distance / follower.data.slipstreamMaxDistance);
+        
+        return distanceStrength * dotProduct;
+    }
+}
+```
+
+---
+
+## 3.5.11 실전 튜닝 가이드
+
+### 11.1 차량 타입별 설정
+
+```csharp
+/// <summary>
+/// 공기역학 프리셋 생성 헬퍼
+/// </summary>
+public static class AeroPresets
+{
+    /// <summary>
+    /// 해치백 (낮은 다운포스, 낮은 드래그)
+    /// </summary>
+    public static AerodynamicsData CreateHatchback()
+    {
+        var data = ScriptableObject.CreateInstance<AerodynamicsData>();
+        
+        // 다운포스
+        data.downforceCoefficient = 1.0f;
+        data.frontDownforceRatio = 0.40f;
+        data.frontalArea = 2.0f;
+        
+        // 드래그
+        data.dragCoefficient = 0.35f;
+        
+        // 슬립스트림
+        data.enableSlipstream = true;
+        data.slipstreamMaxReduction = 0.30f;
+        data.slipstreamMaxDistance = 15f;
+        
+        // 지면 효과
+        data.enableGroundEffect = false;
+        
+        // DRS
+        data.hasDRS = false;
+        
+        return data;
+    }
+    
+    /// <summary>
+    /// GT3 레이스카 (높은 다운포스, 높은 드래그)
+    /// </summary>
+    public static AerodynamicsData CreateGT3()
+    {
+        var data = ScriptableObject.CreateInstance<AerodynamicsData>();
+        
+        // 다운포스
+        data.downforceCoefficient = 4.0f;
+        data.frontDownforceRatio = 0.35f;
+        data.frontalArea = 2.2f;
+        
+        // 드래그
+        data.dragCoefficient = 0.45f;
+        
+        // 슬립스트림
+        data.enableSlipstream = true;
+        data.slipstreamMaxReduction = 0.35f;
+        data.slipstreamMaxDistance = 20f;
+        
+        // 지면 효과
+        data.enableGroundEffect = true;
+        data.groundEffectStrength = 0.5f;
+        data.groundEffectHeight = 0.15f;
+        
+        // DRS
+        data.hasDRS = true;
+        data.drsReduction = 0.25f;
+        data.drsDownforceLoss = 0.15f;
+        
+        // 피치 민감도
+        data.pitchSensitivity = 1.2f;
+        data.maxEffectivePitch = 8f;
+        
+        return data;
+    }
+    
+    /// <summary>
+    /// 포뮬러 (극단적 다운포스)
+    /// </summary>
+    public static AerodynamicsData CreateFormula()
+    {
+        var data = ScriptableObject.CreateInstance<AerodynamicsData>();
+        
+        // 다운포스
+        data.downforceCoefficient = 5.5f;
+        data.frontDownforceRatio = 0.30f;
+        data.frontalArea = 1.5f;
+        
+        // 드래그
+        data.dragCoefficient = 0.80f; // 매우 높음
+        
+        // 슬립스트림
+        data.enableSlipstream = true;
+        data.slipstreamMaxReduction = 0.40f;
+        data.slipstreamMaxDistance = 25f;
+        
+        // 지면 효과
+        data.enableGroundEffect = true;
+        data.groundEffectStrength = 1.0f;
+        data.groundEffectHeight = 0.10f;
+        
+        // DRS
+        data.hasDRS = true;
+        data.drsReduction = 0.30f;
+        data.drsDownforceLoss = 0.20f;
+        
+        // 피치 민감도 (매우 높음)
+        data.pitchSensitivity = 1.8f;
+        data.maxEffectivePitch = 5f;
+        
+        return data;
+    }
+}
+```
+
+### 11.2 밸런싱 체크리스트
+
+```
+공기역학 밸런싱 확인사항:
+
+1. 다운포스 효과 체감
+   ✓ 200+ km/h에서 코너링 속도 20% 향상
+   ✓ 고속에서 서스펜션 압축 눈에 보임
+   ✓ 다운포스 없을 때 vs 있을 때 차이 명확
+
+2. 드래그 효과
+   ✓ 최고속이 현실적 범위 (250-350 km/h)
+   ✓ 가속이 고속에서 눈에 띄게 둔화
+   ✓ DRS 사용 시 최고속 +10 km/h 이상
+
+3. 슬립스트림
+   ✓ 앞차 뒤에서 가속 체감
+   ✓ 추월 기회 생성
+   ✓ 너무 강하지 않음 (과도한 고무줄 효과 방지)
+
+4. 트레이드오프
+   ✓ 높은 다운포스 = 느린 직선 속도
+   ✓ 낮은 드래그 = 불안정한 코너링
+   ✓ 전략적 선택 가능
+
+5. 시각적 피드백
+   ✓ 슬립스트림 이펙트 작동
+   ✓ DRS 플랩 애니메이션
+   ✓ 차체 피칭 자연스러움
+```
+
+### 11.3 디버그 명령어
+
+```csharp
+/// <summary>
+/// 공기역학 디버그 명령어 (개발용)
+/// </summary>
+public class AeroDebugCommands : MonoBehaviour
+{
+    [Header("References")]
+    public AerodynamicsModel aeroModel;
+    
+    void Update()
+    {
+        // F5: 다운포스 배수 토글
+        if (Input.GetKeyDown(KeyCode.F5))
+        {
+            aeroModel.data.downforceCoefficient *= 2f;
+            Debug.Log($"Downforce: {aeroModel.data.downforceCoefficient}");
+        }
+        
+        // F6: 드래그 제거
+        if (Input.GetKeyDown(KeyCode.F6))
+        {
+            aeroModel.data.dragCoefficient = 0f;
+            Debug.Log("Drag disabled");
+        }
+        
+        // F7: 슬립스트림 강제 활성화
+        if (Input.GetKey(KeyCode.F7))
+        {
+            aeroModel.slipstreamFactor = 0.7f;
+        }
+        
+        // F8: 공기역학 완전 비활성화
+        if (Input.GetKeyDown(KeyCode.F8))
+        {
+            aeroModel.enabled = !aeroModel.enabled;
+            Debug.Log($"Aero: {(aeroModel.enabled ? "ON" : "OFF")}");
+        }
+    }
+    
+    void OnGUI()
+    {
+        if (!Debug.isDebugBuild) return;
+        
+        GUILayout.BeginArea(new Rect(10, 200, 300, 200));
+        GUILayout.Box("=== Aero Debug ===");
+        
+        GUILayout.Label($"Speed: {aeroModel.vehicleRigidbody.velocity.magnitude * 3.6f:F1} km/h");
+        GUILayout.Label($"Downforce: {aeroModel.currentDownforce:F0} N");
+        GUILayout.Label($"Drag: {aeroModel.currentDrag:F0} N");
+        GUILayout.Label($"Slipstream: {(1f - aeroModel.slipstreamFactor) * 100f:F0}%");
+        GUILayout.Label($"DRS: {(aeroModel.isDrsActive ? "ON" : "OFF")}");
+        
+        GUILayout.EndArea();
+    }
+}
+```
+
+---
+
+## 3.5.12 문제 해결
+
+### 12.1 일반적인 문제
+
+**문제 1: 차가 너무 빠르게 날아감 (과도한 다운포스)**
+
+```
+증상:
+- 점프 후 착지 시 바운스 없음
+- 차가 땅에 붙어서 움직임
+
+해결:
+1. downforceCoefficient 감소 (4.0 → 2.5)
+2. frontalArea 감소 (2.2 → 1.8)
+3. 피치 민감도 확인 (pitchSensitivity < 1.5)
+```
+
+**문제 2: 고속에서 불안정 (다운포스 부족)**
+
+```
+증상:
+- 200+ km/h에서 언더스티어
+- 고속 코너에서 스핀아웃
+- 점프 후 공중에서 회전
+
+해결:
+1. downforceCoefficient 증가
+2. 전후 분배 조정 (frontDownforceRatio)
+3. 지면 효과 활성화
+4. 드래그 중심 높이 조정
+```
+
+**문제 3: 최고속이 너무 낮음**
+
+```
+증상:
+- 직선에서 200 km/h 이상 안나감
+- 엔진 토크는 충분함
+- 가속이 너무 빨리 멈춤
+
+해결:
+1. dragCoefficient 감소 (0.45 → 0.32)
+2. frontalArea 감소
+3. DRS 사용 활성화
+4. 슬립스트림 효과 증가
+```
+
+**문제 4: 슬립스트림이 안 느껴짐**
+
+```
+증상:
+- 앞차 뒤에서도 가속 차이 없음
+- 추월이 너무 어려움
+
+해결:
+1. slipstreamMaxReduction 증가 (0.3 → 0.4)
+2. slipstreamMaxDistance 증가
+3. 감지 범위 확인 (SphereCast 반경)
+4. 시각 이펙트 추가
+```
+
+### 12.2 성능 문제
+
+```csharp
+/// <summary>
+/// 공기역학 성능 프로파일러
+/// </summary>
+public class AeroPerformanceProfiler : MonoBehaviour
+{
+    [Header("Profiling")]
+    public bool enableProfiling = false;
+    
+    private System.Diagnostics.Stopwatch stopwatch = new System.Diagnostics.Stopwatch();
+    private Dictionary<string, float> timings = new Dictionary<string, float>();
+    
+    public void ProfileMethod(string methodName, System.Action method)
+    {
+        if (!enableProfiling)
+        {
+            method.Invoke();
+            return;
+        }
+        
+        stopwatch.Restart();
+        method.Invoke();
+        stopwatch.Stop();
+        
+        float ms = (float)stopwatch.Elapsed.TotalMilliseconds;
+        
+        if (!timings.ContainsKey(methodName))
+            timings[methodName] = 0f;
+        
+        // 이동 평균
+        timings[methodName] = Mathf.Lerp(timings[methodName], ms, 0.1f);
+    }
+    
+    void OnGUI()
+    {
+        if (!enableProfiling) return;
+        
+        GUILayout.BeginArea(new Rect(Screen.width - 310, 10, 300, 300));
+        GUILayout.Box("=== Aero Performance ===");
+        
+        foreach (var kvp in timings)
+        {
+            Color color = kvp.Value > 0.5f ? Color.red : Color.white;
+            GUI.color = color;
+            GUILayout.Label($"{kvp.Key}: {kvp.Value:F3} ms");
+        }
+        
+        GUI.color = Color.white;
+        GUILayout.EndArea();
+    }
+}
+
+// 사용 예:
+/*
+AeroPerformanceProfiler profiler = GetComponent<AeroPerformanceProfiler>();
+
+void FixedUpdate()
+{
+    profiler.ProfileMethod("Downforce", () => ApplyDownforce());
+    profiler.ProfileMethod("Drag", () => ApplyDrag());
+    profiler.ProfileMethod("Slipstream", () => UpdateSlipstream());
+}
+*/
+```
+
+---
+
+## 요약 체크리스트
+
+### 필수 구현
+- [ ] `AerodynamicsData` ScriptableObject
+- [ ] `AerodynamicsModel` 클래스
+- [ ] 다운포스 계산 및 적용
+- [ ] 드래그 계산 및 적용
+- [ ] 전후 다운포스 분배
+- [ ] 속도 제곱 관계 구현
+
+### 권장 구현
+- [ ] 슬립스트림 시스템
+- [ ] 피치 효과 (차체 각도)
+- [ ] 지면 효과 (Ground Effect)
+- [ ] DRS 시스템
+- [ ] 측풍 효과
+
+### 선택적 구현
+- [ ] 동적 날씨 시스템
+- [ ] 슬립스트림 시각 효과
+- [ ] LOD 시스템
+- [ ] 배치 처리 최적화
+- [ ] 텔레메트리 로깅
+
+### 디버깅 도구
+- [ ] Gizmos 시각화
+- [ ] 에디터 확장
+- [ ] 런타임 디버그 UI
+- [ ] 성능 프로파일러
+
+### 밸런싱
+- [ ] 차량 타입별 프리셋 생성
+- [ ] 최고속 테스트 (현실적 범위)
+- [ ] 다운포스 체감 테스트
+- [ ] 슬립스트림 효과 테스트
+- [ ] DRS 효과 확인
+
+---
+
+## 다음 문서
+
+이어질 문서들:
+1. **3.6 차체 통합** - 모든 물리 시스템을 Rigidbody에 통합
+2. **4.0 카메라 시스템** - 물리 연동 카메라
+3. **5.0 입력 시스템** - 조향, 가속, 브레이크
+4. **6.0 AI 시스템** - 상대 차량 AI
+
+---
+
+## 참고 공식
+
+```
+다운포스:
+F_down = 0.5 × ρ × v² × A × Cl
+
+드래그:
+F_drag = 0.5 × ρ × v² × A × Cd
+
+동적 압력:
+q = 0.5 × ρ × v²
+
+L/D 비율 (효율):
+Efficiency = Downforce / Drag
+
+공기 밀도 (15°C, 해수면):
+ρ = 1.225 kg/m³
+
+속도 변환:
+1 m/s = 3.6 km/h
+```
+
+---
+
+**문서 버전**: 1.0  
+**작성일**: 2024  
+**상태**: 구현 준비 완료 ✅  
+**특화**: Grid Legends 스타일, 슬립스트림 + DRS 포함 다운포스 계산 및 적용
+/// </summary>
+private void ApplyDownforce()
+{
+    if (speedSquared < 1f) return; // 매우 저속에서는 무시
+    
+    // === 1. 기본 다운포스 계산 ===
+    
+    float speed = Mathf.Sqrt(speedSquared);
+    float dynamicPressure = 0.5f * data.airDensity * speedSquared;
+    
+    float downforce = dynamicPressure * data.frontalArea * data.downforceCoefficient;
+    
+    // === 2. DRS 효과 ===
+    
+    if (isDrsActive && data.hasDRS)
+    {
+        downforce *= (1f - data.drsDownforceLoss);
+    }
+    
+    // === 3. 피치 각도 효과 ===
+    
+    float pitchFactor = CalculatePitchEffect();
+    downforce *= pitchFactor;
+    
+    // === 4. 지면 효과 ===
+    
+    if (data.enableGroundEffect)
+    {
+        float groundEffect = CalculateGroundEffect();
+        downforce *= (1f + groundEffect);
+    }
+    
+    // === 5. 전후 분배 ===
+    
+    float frontDownforce = downforce * data.frontDownforceRatio;
+    float rearDownforce = downforce * (1f - data.frontDownforceRatio);
+    
+    // === 6. 힘 적용 (아래 방향) ===
+    
+    Vector3 downforceVector = -transform.up * frontDownforce;
+    vehicleRigidbody.AddForceAtPosition(
+        downforceVector,
+        frontDownforcePoint.position,
+        ForceMode.Force
+    );
+    
+    downforceVector = -transform.up * rearDownforce;
+    vehicleRigidbody.AddForceAtPosition(
+        downforceVector,
+        rearDownforcePoint.position,
+        ForceMode.Force
+    );
+    
+    // 디버깅용
+    currentDownforce = downforce;
+}
+```
+
+### 3.4 피치 효과
+
+```csharp
+/// <summary>
+/// 차체 피치 각도가 다운포스에 미치는 영향
+/// </summary>
+/// <returns>다운포스 배율 (0.5 ~ 1.5)</returns>
+private float CalculatePitchEffect()
+{
+    // 1. 차체 피치 각도 계산 (도)
+    float pitchAngle = Vector3.SignedAngle(
+        Vector3.forward,
+        Vector3.ProjectOnPlane(transform.forward, Vector3.up),
+        Vector3.right
+    );
+    
+    // 2. 정규화 (-1 ~ 1)
+    float normalizedPitch = Mathf.Clamp(
+        pitchAngle / data.maxEffectivePitch,
+        -1f, 1f
+    );
+    
+    // 3. 효과 계산
+    // 앞이 들리면 (양수): 다운포스 증가
+    // 앞이 낮아지면 (음수): 다운포스 감소
+    float pitchEffect = 1f + (normalizedPitch * data.pitchSensitivity * 0.3f);
+    
+    return Mathf.Clamp(pitchEffect, 0.5f, 1.5f);
+}
+```
+
+**피치 효과 시각화:**
+```
+차체 자세에 따른 다운포스 변화:
+
+앞이 들림 (+5°):
+    ╱─────
+   ╱
+  ─────────  다운포스 +15%
+노면
+
+수평 (0°):
+  ─────────
+  ─────────  다운포스 100%
+노면
+
+앞이 낮음 (-5°):
+  ─────────
+   ╲
+    ╲─────  다운포스 -15%
+노면
+
+실제 효과:
+- 가속 시: 앞이 들림 → 다운포스 증가 → 견인력 향상
+- 제동 시: 앞이 낮아짐 → 다운포스 감소 → 제동력 감소
+```
+
+### 3.5 지면 효과
+
+```csharp
+/// <summary>
+/// 지면 효과 (Ground Effect) 계산
+/// </summary>
+/// <returns>추가 다운포스 비율 (0 ~ 1)</returns>
+private float CalculateGroundEffect()
+{
+    // 1. 차체 높이 측정 (Raycast)
+    float rideHeight = MeasureRideHeight();
+    
+    // 2. 지면 효과는 낮을수록 강함
+    if (rideHeight > data.groundEffectHeight)
+        return 0f; // 너무 높으면 효과 없음
+    
+    // 3. 비선형 관계 (매우 낮을 때 급격히 증가)
+    float heightRatio = rideHeight / data.groundEffectHeight;
+    float effectStrength = Mathf.Pow(1f - heightRatio, 2f); // 제곱 관계
+    
+    return effectStrength * data.groundEffectStrength;
+}
+
+/// <summary>
+/// 차체 높이 측정 (간단한 Raycast)
+/// </summary>
+private float MeasureRideHeight()
+{
+    Vector3 rayStart = transform.position;
+    Vector3 rayDirection = -transform.up;
+    float rayLength = 1f;
+    
+    if (Physics.Raycast(rayStart, rayDirection, out RaycastHit hit, rayLength))
+    {
+        return hit.distance;
+    }
+    
+    return rayLength; // Hit 실패 시 최대값
+}
+```
+
+**지면 효과 그래프:**
+```
+다운포스 증가 (%)
+   ↑
+50%│╲
+   │ ╲
+40%│  ╲
+   │   ╲
+30%│    ╲
+   │     ╲___
+20%│         ────___
+   │                ────___
+   └────────────────────────→ 차체 높이 (cm)
+   0   5   10   15   20   25
+
+특징:
+- 0-5cm: 극단적 증가 (포징 위험)
+- 5-10cm: 강한 효과
+- 10-15cm: 중간 효과
+- 15cm+: 효과 소멸
+
+전략:
+- 낮은 라이드 높이 = 최대 다운포스, 범프 민감
+- 높은 라이드 높이 = 안정적, 다운포스 감소
+```
+
+---
+
+## 3.5.4 드래그 (공기저항)
+
+### 4.1 이론
+
+```
+드래그 공식:
+
+F_drag = 0.5 × ρ × v² × A × Cd
+
+여기서:
+F_drag = 드래그 힘 (N)
+Cd = 드래그 계수 (무차원)
+기타 변수는 다운포스와 동일
+
+방향: 속도의 반대 방향
+
+예시:
+속도 250 km/h (69.4 m/s)
+Cd = 0.35
+A = 2.0 m²
+
+F_drag = 0.5 × 1.225 × 69.4² × 2.0 × 0.35
+       = 2,064 N
+```
+
+### 4.2 구현
+
+```csharp
+/// <summary>
+/// 드래그 계산 및 적용
+/// </summary>
+private void ApplyDrag()
+{
+    if (speedSquared < 0.1f) return;
+    
+    // === 1. 기본 드래그 계산 ===
+    
+    float dynamicPressure = 0.5f * data.airDensity * speedSquared;
+    float drag = dynamicPressure * data.frontalArea * data.dragCoefficient;
+    
+    // === 2. 슬립스트림 효과 ===
+    
+    drag *= slipstreamFactor; // 슬립스트림 시 감소
+    
+    // === 3. DRS 효과 ===
+    
+    if (isDrsActive && data.hasDRS)
+    {
+        drag *= (1f - data.drsReduction);
+    }
+    
+    // === 4. 드래그 방향 ===
+    
+    // 속도의 반대 방향 (전진 방향이 아님!)
+    Vector3 dragDirection = -relativeVelocity.normalized;
+    Vector3 dragForce = dragDirection * drag;
+    
+    // === 5. 힘 적용 (드래그 중심에) ===
+    
+    Vector3 dragApplicationPoint = centerOfPressure.position 
+        + transform.up * data.dragCenterHeight;
+    
+    vehicleRigidbody.AddForceAtPosition(
+        dragForce,
+        dragApplicationPoint,
+        ForceMode.Force
+    );
+    
+    // 디버깅용
+    currentDrag = drag;
+}
+```
+
+### 4.3 드래그 토크 효과
+
+```csharp
+/// <summary>
+/// 드래그로 인한 피칭 토크 (선택적)
+/// </summary>
+private void ApplyDragTorque()
+{
+    // 드래그 중심이 무게 중심보다 높으면 앞으로 기울어지려는 토크 발생
+    
+    float heightDifference = data.dragCenterHeight; // CoM 기준
+    
+    if (Mathf.Abs(heightDifference) < 0.01f)
+        return; // 높이 차이 무시 가능
+    
+    // 토크 = 힘 × 거리
+    float torqueMagnitude = currentDrag * heightDifference;
+    
+    // 피치 축 (좌우 축)
+    Vector3 torqueAxis = transform.right;
+    Vector3 torque = torqueAxis * torqueMagnitude;
+    
+    vehicleRigidbody.AddTorque(torque, ForceMode.Force);
+}
+```
+
+---
+
+## 3.5.5 슬립스트림 (Slipstream/Drafting)
+
+### 5.1 개념
+
+```
+슬립스트림 (Drafting):
+
+앞차가 공기를 밀어내며 생성한 저압 구역에서
+뒷차가 적은 공기저항을 받는 현象
+
+시각화:
+
+     [앞차]
+        ║      ← 고압
+    ════╬════
+        ║
+    ┌───╨───┐  ← 저압 구역 (슬립스트림)
+    │       │
+    │ [뒷차]│  ← 드래그 -30%
+    │       │
+    └───────┘
+
+효과:
+- 드래그 감소 → 가속 향상
+- 최고속 증가
+- 연료 절약 (현실)
+- 추월 기회 창출 (게임)
+```
+
+### 5.2 감지 시스템
+
+```csharp
+/// <summary>
+/// 슬립스트림 업데이트 (다른 차량 탐지)
+/// </summary>
+private void UpdateSlipstream()
+{
+    if (!data.enableSlipstream)
+    {
+        slipstreamFactor = 1f;
+        return;
+    }
+    
+    // 1. 앞쪽 차량들 탐지
+    var vehiclesAhead = FindVehiclesAhead();
+    
+    if (vehiclesAhead.Length == 0)
+    {
+        // 슬립스트림 없음
+        slipstreamFactor = Mathf.Lerp(slipstreamFactor, 1f, Time.fixedDeltaTime * 2f);
+        return;
+    }
+    
+    // 2. 가장 강한 슬립스트림 찾기
+    float strongestSlipstream = 0f;
+    
+    foreach (var vehicle in vehiclesAhead)
+    {
+        float strength = CalculateSlipstreamStrength(vehicle);
+        strongestSlipstream = Mathf.Max(strongestSlipstream, strength);
+    }
+    
+    // 3. 슬립스트림 팩터 계산 (1 = 없음, 0.65 = 35% 감소)
+    float targetFactor = 1f - (strongestSlipstream * data.slipstreamMaxReduction);
+    
+    // 4. 부드럽게 전환
+    slipstreamFactor = Mathf.Lerp(
+        slipstreamFactor, 
+        targetFactor, 
+        Time.fixedDeltaTime * 3f
+    );
+}
+
+/// <summary>
+/// 앞쪽 차량 찾기 (시야각 + 거리)
+/// </summary>
+private Rigidbody[] FindVehiclesAhead()
+{
+    // SphereCast로 앞쪽 탐색
+    Vector3 origin = transform.position;
+    Vector3 direction = transform.forward;
+    float radius = data.slipstreamWidth * 0.5f;
+    float maxDistance = data.slipstreamMaxDistance;
+    
+    RaycastHit[] hits = Physics.SphereCastAll(
+        origin,
+        radius,
+        direction,
+        maxDistance,
+        LayerMask.GetMask("Vehicle")
+    );
+    
+    // 자기 자신 제외 + Rigidbody 필터링
+    List<Rigidbody> vehicles = new List<Rigidbody>();
+    
+    foreach (var hit in hits)
+    {
+        Rigidbody rb = hit.rigidbody;
+        if (rb != null && rb != vehicleRigidbody)
+        {
+            vehicles.Add(rb);
+        }
+    }
+    
+    return vehicles.ToArray();
+}
+```
+
+### 5.3 슬립스트림 강도 계산
+
+```csharp
+/// <summary>
+/// 특정 차량으로부터의 슬립스트림 강도 계산
+/// </summary>
+/// <param name="targetVehicle">앞차</param>
+/// <returns>강도 (0~1)</returns>
+private float CalculateSlipstreamStrength(Rigidbody targetVehicle)
+{
+    // === 1. 거리 체크 ===
+    
+    Vector3 toTarget = targetVehicle.position - transform.position;
+    float distance = toTarget.magnitude;
+    
+    if (distance > data.slipstreamMaxDistance)
+        return 0f; // 너무 멀음
+    
+    // === 2. 각도 체크 (정면에 있는가?) ===
+    
+    Vector3 directionToTarget = toTarget.normalized;
+    float dotProduct = Vector3.Dot(transform.forward, directionToTarget);
+    
+    if (dotProduct < 0.7f) // 약 45도 이내
+        return 0f; // 각도 밖
+    
+    // === 3. 측면 오프셋 체크 ===
+    
+    Vector3 localPosition = transform.InverseTransformPoint(targetVehicle.position);
+    float lateralOffset = Mathf.Abs(localPosition.x);
+    
+    if (lateralOffset > data.slipstreamWidth * 0.5f)
+        return 0f; // 옆으로 벗어남
+    
+    // === 4. 거리 감쇠 계산 ===
+    
+    float distanceStrength;
+    
+    if (distance < data.slipstreamFadeStart)
+    {
+        // 근거리: 최대 효과
+        distanceStrength = 1f;
+    }
+    else
+    {
+        // 원거리: 선형 감쇠
+        float fadeRange = data.slipstreamMaxDistance - data.slipstreamFadeStart;
+        float fadeDistance = distance - data.slipstreamFadeStart;
+        distanceStrength = 1f - (fadeDistance / fadeRange);
+    }
+    
+    // === 5. 측면 오프셋 감쇠 ===
+    
+    float lateralStrength = 1f - (lateralOffset / (data.slipstreamWidth * 0.5f));
+    lateralStrength = Mathf.Clamp01(lateralStrength);
+    
+    // === 6. 속도 차이 보정 (선택) ===
+    
+    // 앞차가 더 빠르면 슬립스트림 강함
+    float mySpeed = vehicleRigidbody.velocity.magnitude;
+    float targetSpeed = targetVehicle.velocity.magnitude;
+    float speedRatio = Mathf.Clamp01(targetSpeed / Mathf.Max(mySpeed, 1f));
+    
+    // === 7. 최종 강도 ===
+    
+    float finalStrength = distanceStrength * lateralStrength * speedRatio;
+    
+    return Mathf.Clamp01(finalStrength);
+}
+```
+
+### 5.4 슬립스트림 시각화
+
+```csharp
+/// <summary>
+/// 슬립스트림 이펙트 표시 (VFX 연동)
+/// </summary>
+public void UpdateSlipstreamVisuals()
+{
+    // 슬립스트림 강도 (0~1)
+    float intensity = 1f - slipstreamFactor; // 0 = 없음, 0.35 = 최대
+    
+    if (intensity > 0.1f)
+    {
+        // VFX 활성화
+        EnableSlipstreamEffect(intensity);
+        
+        // 사운드 (바람 소리 감소)
+        AdjustWindSound(intensity);
+        
+        // UI 표시
+        ShowSlipstreamUI(intensity);
+    }
+    else
+    {
+        // VFX 비활성화
+        DisableSlipstreamEffect();
+    }
+}
+
+private void EnableSlipstreamEffect(float intensity)
+{
+    // 예: 파티클 시스템
+    // slipstreamParticles.Play();
+    // slipstreamParticles.emissionRate = intensity * 100f;
+    
+    // 예: 포스트 프로세싱 (속도감 블러)
+    // motionBlur.intensity = intensity * 0.3f;
+}
+```
+
+**슬립스트림 강도 그래프:**
+```
+강도 (%)
+   ↑
+100│██████░░░░░░░░░░░░░░░░  
+   │      ╲
+ 75│       ╲
+   │        ╲
+ 50│         ╲
+   │          ─────────────
+ 25│
+   │
+   └────────────────────────→ 거리 (m)
+   0   5   8   12   16   20
+       ↑   ↑            ↑
+      최대  페이드     효과 없음
+            시작
+
+측면 오프셋 효과:
+중심선: 100%
+1m 옆: 75%
+2m 옆: 50%
+4m 옆: 0%
+```
+
+---
+
+## 3.5.6 차체 피칭 효과
+
+### 6.1 개념
+
+```
+차체 피칭 (Pitch):
+
+가속/감속 시 차체가 앞뒤로 기울어지는 현상
+
+가속 시:
+    ╱─────  ← 앞이 들림
+   ╱        - 전방 다운포스 감소
+  ─────────  - 후방 다운포스 증가
+             - 견인력 향상
+
+감속 시:
+  ─────────  ← 앞이 낮아짐
+   ╲        - 전방 다운포스 증가
+    ╲─────  - 후방 다운포스 감소
+             - 제동력 향상
+```
+
+### 6.2 동적 다운포스 분배
+
+```csharp
+/// <summary>
+/// 피칭에 따른 동적 다운포스 분배
+/// </summary>
+private void ApplyDynamicDownforceDistribution()
+{
+    // 1. 현재 피치 각도
+    float pitchAngle = GetPitchAngle(); // 도 단위
+    
+    // 2. 기본 분배 비율
+    float baseFrontRatio = data.frontDownforceRatio;
+    float baseRearRatio = 1f - data.frontDownforceRatio;
+    
+    // 3. 피치에 따른 조정
+    // 양수 (앞 들림): 전방 감소, 후방 증가
+    // 음수 (앞 낮아짐): 전방 증가, 후방 감소
+    
+    float pitchEffect = Mathf.Clamp(pitchAngle / data.maxEffectivePitch, -1f, 1f);
+    float shiftAmount = pitchEffect * 0.1f; // 최대 10% 이동
+    
+    float frontRatio = baseFrontRatio - shiftAmount;
+    float rearRatio = baseRearRatio + shiftAmount;
+    
+    // 4. 클램핑 (0.2 ~ 0.8)
+    frontRatio = Mathf.Clamp(frontRatio, 0.2f, 0.8f);
+    rearRatio = 1f - frontRatio;
+    
+    // 5. 다운포스 적용 (이전 코드에서 이 비율 사용)
+    // ...
+}
+
+private float GetPitchAngle()
+{
+    Vector3 forward = transform.forward;
+    Vector3 forwardFlat = Vector3.ProjectOnPlane(forward, Vector3.up).normalized;
+    
+    return Vector3.SignedAngle(forwardFlat, forward, transform.right);
+}
+```
+
+### 6.3 피칭 토크 생성 (물리적 피드백)
+
+```csharp
+/// <summary>
+/// 공기역학적 피칭 토크 (리얼리즘 향상)
+/// </summary>
+private void ApplyAerodynamicPitchTorque()
+{
+    // 다운포스가 전후 불균형하면 자연스럽게 피칭 토크 발생
+    
+    float totalDownforce = currentDownforce;
+    
+    // 전후 다운포스 차이
+    float frontDownforce = totalDownforce * data.frontDownforceRatio;
+    float rearDownforce = totalDownforce * (1f - data.frontDownforceRatio);
+    
+    // 전후 축간 거리 (휠베이스)
+    float wheelbase = Vector3.Distance(
+        frontDownforcePoint.position,
+        rearDownforcePoint.position
+    );
+    
+    // 토크 = (앞 힘 - 뒤 힘) × 거리 / 2
+    float torqueMagnitude = (frontDownforce - rearDownforce) * wheelbase * 0.5f;
+    
+    Vector3 torque = transform.right * torqueMagnitude;
+    
+    // 약한 토크 적용 (너무 강하면 불안정)
+    vehicleRigidbody.AddTorque(torque * 0.1f, ForceMode.Force);
+}
+```
+
+---
+
+## 3.5.7 측풍 효과
+
+### 7.1 개념
+
+```
+측풍 (Crosswind):
+
+옆에서 부는 바람이 차량에 미치는 영향
+
+효과:
+1. 측면 힘 (Side Force) → 차량이 밀림
+2. 요 토크 (Yaw Torque) → 차량이 회전
+3. 롤 토크 (Roll Torque) → 차량이 기울어짐
+
+시각화 (위에서 본 모습):
+
+바람 →→→→→
+         ╔═══╗
+         ║ 차 ║  ← 측면 힘
+         ║   ║
+         ╚═══╝
+           ↻     ← 요 토크
+```
+
+### 7.2 구현
+
+```csharp
+/// <summary>
+/// 측풍 효과 적용
+/// </summary>
+/// <param name="windVelocity">바람 속도 (월드 좌표)</param>
+private void ApplyCrosswind(Vector3 windVelocity)
+{
+    if (windVelocity.sqrMagnitude < 0.1f)
+        return; // 바람 없음
+    
+    // === 1. 상대 풍속 계산 ===
+    
+    Vector3 relativeWind = windVelocity - vehicleRigidbody.velocity;
+    
+    // 차량 로컬 좌표로 변환
+    Vector3 localWind = transform.InverseTransformDirection(relativeWind);
+    
+    // === 2. 측면 풍속만 추출 ===
+    
+    float crosswindSpeed = localWind.x; // 좌우 성분
+    
+    if (Mathf.Abs(crosswindSpeed) < 0.5f)
+        return; // 무시 가능한 수준
+    
+    // === 3. 측면 힘 계산 ===
+    
+    float dynamicPressure = 0.5f * data.airDensity * crosswindSpeed * crosswindSpeed;
+    float sideArea = data.frontalArea * 0.6f; // 측면 투영 면적 (대략 60%)
+    float sideForceMagnitude = dynamicPressure * sideArea * data.crosswindSensitivity;
+    
+    // 방향 고려
+    sideForceMagnitude *= Mathf.Sign(crosswindSpeed);
+    
+    Vector3 sideForce = transform.right * sideForceMagnitude;
+    
+    // === 4. 측면 힘 적용 (무게 중심보다 높은 위치) ===
+    
+    Vector3 forcePosition = centerOfPressure.position + transform.up * 0.5f;
+    vehicleRigidbody.AddForceAtPosition(sideForce, forcePosition, ForceMode.Force);
+    
+    // === 5. 요 토크 (선택적) ===
+    
+    // 측풍이 차체 중앙이 아닌 앞/뒤에 더 작용하면 요 토크 발생
+    float yawTorque = sideForceMagnitude * 0.5f; // 간소화
+    vehicleRigidbody.AddTorque(transform.up * yawTorque, ForceMode.Force);
+}
+```
+
+### 7.3 동적 날씨 시스템 연동
+
+```csharp
+/// <summary>
+/// 날씨 관리자 (예시)
+/// </summary>
+public class WeatherManager : MonoBehaviour
+{
+    [Header("Wind Settings")]
+    public bool enableWind = true;
+    
+    [Tooltip("기본 풍속 (m/s)")]
+    [Range(0f, 20f)]
+    public float baseWindSpeed = 5f;
+    
+    [Tooltip("바람 방향 (도)")]
+    [Range(0f, 360f)]
+    public float windDirection = 90f; // 동쪽
+    
+    [Tooltip("돌풍 강도")]
+    [Range(0f, 1f)]
+    public float gustStrength = 0.3f;
+    
+    [Tooltip("돌풍 주파수 (Hz)")]
+    [Range(0.1f, 2f)]
+    public float gustFrequency = 0.5f;
+    
+    private float gustPhase;
+    
+    void Update()
+    {
+        gustPhase += Time.deltaTime * gustFrequency * 2f * Mathf.PI;
+    }
+    
+    /// <summary>
+    /// 현재 바람 속도 가져오기
+    /// </summary>
+    public Vector3 GetWindVelocity()
+    {
+        if (!enableWind)
+            return Vector3.zero;
+        
+        // 기본 바람
+        Vector3 baseWind = Quaternion.Euler(0f, windDirection, 0f) * Vector3.forward;
+        baseWind *= baseWindSpeed;
+        
+        // 돌풍 추가 (사인파)
+        float gustMultiplier = 1f + Mathf.Sin(gustPhase) * gustStrength;
+        
+        return baseWind * gustMultiplier;
+    }
+}
+```
+
+---
+
+## 3.5.8 DRS (Drag Reduction System)
+
+### 8.1 개념
+
+```
+DRS (Drag Reduction System):
+
+리어 윙 플랩을 열어 드래그를 줄이는 시스템
+F1 등에서 추월을 돕기 위해 사용
+
+효과:
+- 드래그 -25%
+- 다운포스 -15%
+- 최고속 +10~15 km/h
+
+제한 조건:
+1. 지정된 DRS 존에서만
+2. 앞차와 1초 이내 거리
+3. 직선 구간 (안정성)
+```
+
+### 8.2 구현
+
+```csharp
+public class DRSSystem : MonoBehaviour
+{
+    [Header("References")]
+    public AerodynamicsModel aeroModel;
+    
+    [Header("DRS Settings")]
+    public bool canUseDRS = true;
+    
+    [Tooltip("DRS 활성화 가능 영역")]
+    public List<DRSZone> drsZones = new List<DRSZone>();
+    
+    [Tooltip("DRS 지속 시간 (초)")]
+    [Range(0.5f, 5f)]
+    public float drsDuration = 3f;
+    
+    [Header("Activation Conditions")]
+    [Tooltip("앞차와의 최대 거리 (m)")]
+    public float maxDistanceToLeader = 30f;
+    
+    [Tooltip("최소 활성화 속도 (km/h)")]
+    public float minSpeedKmh = 150f;
+    
+    [Header("Runtime State")]
+    [ReadOnly] public bool isDRSActive = false;
+    [ReadOnly] public bool isDRSAvailable = false;
+    [ReadOnly] public float drsTimer = 0f;
+    
+    void Update()
+    {
+        // 1. DRS 가능 여부 체크
+        CheckDRSAvailability();
+        
+        // 2. 입력 처리
+        if (Input.GetKeyDown(KeyCode.D) && isDRSAvailable)
+        {
+            ActivateDRS();
+        }
+        
+        // 3. DRS 타이머
+        if (isDRSActive)
+        {
+            drsTimer -= Time.deltaTime;
+            
+            if (drsTimer <= 0f || !CanMaintainDRS())
+            {
+                DeactivateDRS();
+            }
+        }
+    }
+    
+    /// <summary>
+    /// DRS 사용 가능 여부 체크
+    /// </summary>
+    private void CheckDRSAvailability()
+    {
+        if (!canUseDRS || isDRSActive)
+        {
+            isDRSAvailable = false;
+            return;
+        }
+        
+        // 1. DRS 존 안에 있는가?
+        bool inDRSZone = IsInDRSZone();
+        
+        // 2. 속도 충분한가?
+        float speedKmh = aeroModel.vehicleRigidbody.velocity.magnitude * 3.6f;
+        bool fastEnough = speedKmh >= minSpeedKmh;
+        
+        // 3. 앞차와 가까운가? (옵션)
+        bool closeToLeader = IsCloseToLeader();
+        
+        isDRSAvailable = inDRSZone && fastEnough && closeToLeader;
+    }
+    
+    /// <summary>
+    /// DRS 활성화
+    /// </summary>
+    private void ActivateDRS()
+    {
+        isDRSActive = true;
+        drsTimer = drsDuration;
+        
+        // AeroModel에 알림
+        aeroModel.isDrsActive = true;
+        
+        // VFX/사운드
+        OnDRSActivated?.Invoke();
+        
+        // 리어 윙 애니메이션
+        // rearWingAnimator.SetTrigger("Open");
+    }
+    
+    /// <summary>
+    /// DRS 비활성화
+    /// </summary>
+    private void DeactivateDRS()
+    {
+        isDRSActive = false;
+        drsTimer = 0f;
+        
+        aeroModel.isDrsActive = false;
+        
+        OnDRSDeactivated?.Invoke();
+        
+        // rearWingAnimator.SetTrigger("Close");
+    }
+    
+    /// <summary>
+    /// DRS 존 체크
+    /// </summary>
+    private bool IsInDRSZone()
+    {
+        Vector3 position = transform.position;
+        
+        foreach (var zone in drsZones)
+        {
+            if (zone.Contains(position))
+                return true;
+        }
+        
+        return false;
+    }
+    
+    /// <summary>
+    /// 앞차와의 거리 체크
+    /// </summary>
+    private bool IsCloseToLeader()
+    {
+        // 간단한 Raycast (실제로는 레이스 포지션 시스템 사용)
+        Vector3 origin = transform.position;
+        Vector3 direction = transform.forward;
+        
+        if (Physics.Raycast(origin, direction, out RaycastHit hit, 
+            maxDistanceToLeader, LayerMask.GetMask("Vehicle")))
+        {
+            if (hit.rigidbody != null && hit.rigidbody != aeroModel.vehicleRigidbody)
+            {
+                return true;
+            }
+        }
+        
+        return false;
+    }
+    
+    /// <summary>
+    /// DRS 유지 조건 체크 (급커브에서 자동 해제)
+    /// </summary>
+    private bool CanMaintainDRS()
+    {
+        // 조향각이 너무 크면 위험 (안정성)
+        float steeringAngle = GetSteeringAngle();
+        
+        if (Mathf.Abs(steeringAngle) > 15f) // 15도 이상
+            return false;
+        
+        // 여전히 DRS 존 안에 있는가?
+        return IsInDRSZone();
+    }
+    
+    private float GetSteeringAngle()
+    {
+        // 실제로는 입력 시스템에서 가져옴
+        return Input.GetAxis("Horizontal") * 30f; // 임시
+    }
+    
+    // 이벤트
+    public System.Action OnDRSActivated;
+    public System.Action OnDRSDeactivated;
+}
+
+/// <summary>
+/// DRS 존 정의
+/// </summary>
+[System.Serializable]
+public class DRSZone
+{
+    public Transform start;
+    public Transform end;
+    public float width = 20f;
+    
+    public bool Contains(Vector3 position)
+    {
+        // 간단한 박스 체크 (실제로는 더 정교하게)
+        Vector3 toPos = position - start.position;
+        Vector3 zoneDirection = (end.position - start.position).normalized;
+        
+        float alongZone = Vector3.Dot(toPos, zoneDirection);
+        float zoneLength = Vector3.Distance(start.position, end.position);
+        
+        if (alongZone < 0f || alongZone > zoneLength)
+            return false;
+        
+        Vector3 closestPoint = start.position + zoneDirection * alongZone;
+        float distanceFromCenter = Vector3.Distance(position, closestPoint);
+        
+        return distanceFromCenter <= width * 0.5f;
+    }
+}
+```
+
+---
+
+## 3.5.9 통합 및 디버깅
+
+### 9.1 전체 시스템 통합
+
+```csharp
+/// <summary>
+/// 공기역학 시스템 전체 업데이트 (FixedUpdate)
+/// </summary>
+public class AerodynamicsController : MonoBehaviour
+{
+    [Header("Components")]
+    public AerodynamicsModel aeroModel;
+    public DRSSystem drsSystem;
+    public WeatherManager weatherManager;
+    
+    void FixedUpdate()
+    {
+        // 1. 날씨 정보 가져오기
+        Vector3 windVelocity = weatherManager != null 
+            ? weatherManager.GetWindVelocity() 
+            : Vector3.zero;
+        
+        // 2. 공기역학 업데이트
+        aeroModel.UpdateAerodynamics(windVelocity);
+        
+        // 3. DRS 업데이트 (Update에서 이미 처리됨)
+    }
+}
+
+// AerodynamicsModel에 추가:
+public void UpdateAerodynamics(Vector3 windVelocity)
+{
+    // 기존 FixedUpdate 내용을 여기로 이동
+    CalculateRelativeVelocity();
+    ApplyDownforce();
+    ApplyDrag();
+    UpdateSlipstream();
+    ApplyCrosswind(windVelocity);
+}
+```
+
+### 9.2 디버그 시각화
+
+```csharp
+void OnDrawGizmos()
+{
+    if (!Application.isPlaying) return;
+    
+    Vector3 position = transform.position;
+    
+    // === 1. 다운포스 벡터 ===
+    Gizmos.color = Color.blue;
+    Vector3 downforceVis = -transform.up * (currentDownforce * 0.001f); // 스케일링
+    Gizmos.DrawRay(position, downforceVis);
+    Gizmos.DrawWireSphere(position + downforceVis, 0.2f);
+    
+    // === 2. 드래그 벡터 ===
+    Gizmos.color = Color.red;
+    Vector3 dragVis = -relativeVelocity.normalized * (currentDrag * 0.001f);
+    Gizmos.DrawRay(position, dragVis);
+    
+    // === 3. 슬립스트림 영역 ===
+    if (data.enableSlipstream)
+    {
+        Gizmos.color = new Color(0f, 1f, 1f, 0.3f);
+        
+        // 슬립스트림 콘 그리기
+        Vector3 start = position;
+        Vector3 end = position + transform.forward * data.slipstreamMaxDistance;
+        float radius = data.slipstreamWidth * 0.5f;
+        
+        DrawWireCapsule(start, end, radius);
+    }
+    
+    // === 4. DRS 상태 ===
+    if (isDrsActive)
+    {
+        Gizmos.color = Color.yellow;
+        Gizmos.DrawWireSphere(position + Vector3.up * 2f, 0.5f);
+    }
+    
+    // === 5. 다운포스 적용 포인트 ===
+    Gizmos.color = Color.cyan;
+    if (frontDownforcePoint != null)
+        Gizmos.DrawWireSphere(frontDownforcePoint.position, 0.1f);
+    if (rearDownforcePoint != null)
+        Gizmos.DrawWireSphere(rearDownforcePoint.position, 0.1f);
+}
+
+private void DrawWireCapsule(Vector3 start, Vector3 end, float radius)
+{
+    // 간단한 캡슐 그리기 (헬퍼 함수)
+    #if UNITY_EDITOR
+    UnityEditor.Handles.DrawWireDisc(start, (end - start).normalized, radius);
+    UnityEditor.Handles.DrawWireDisc(end, (end - start).normalized, radius);
+    #endif
+}
+```
+
+### 9.3 에디터 확장
+
+```csharp
+#if UNITY_EDITOR
+using UnityEditor;
+
+[CustomEditor(typeof(AerodynamicsModel))]
+public class AerodynamicsModelEditor : Editor
+{
+    public override void OnInspectorGUI()
+    {
+        DrawDefaultInspector();
+        
+        AerodynamicsModel aero = (AerodynamicsModel)target;
+        
+        if (!Application.isPlaying)
+            return;
+        
+        EditorGUILayout.Space();
+        EditorGUILayout.LabelField("=== Runtime Status ===", EditorStyles.boldLabel);
+        
+        // 속도
+        float speedKmh = aero.vehicleRigidbody.velocity.magnitude * 3.6f;
+        EditorGUILayout.LabelField($"Speed: {speedKmh:F1} km/h");
+        
+        // 다운포스
+        EditorGUILayout.LabelField($"Downforce: {aero.currentDownforce:F0} N");
+        EditorGUILayout.LabelField($"  → Weight: {aero.currentDownforce / 9.81f:F0} kg");
+        
+        // 다운포스 바
+        Rect rect = EditorGUILayout.GetControlRect(false, 20f);
+        float downforceRatio = aero.currentDownforce / (aero.data.peakForce * 10f);
+        EditorGUI.ProgressBar(rect, downforceRatio, $"{aero.currentDownforce:F0} N");
+        
+        // 드래그
+        EditorGUILayout.LabelField($"Drag: {aero.currentDrag:F0} N");
+        
+        // 슬립스트림
+        if (aero.slipstreamFactor < 1f)
+        {
+            float reduction = (1f - aero.slipstreamFactor) * 100f;
+            EditorGUILayout.HelpBox($"Slipstream: -{reduction:F0}% Drag", MessageType.Info);
+        }
+        
+        // DRS
+        if (aero.isDrsActive)
+        {
+            EditorGUILayout.HelpBox("DRS ACTIVE", MessageType.Warning);
+        }
+        
+        // 효율성 계산
+        EditorGUILayout.Space();
+        EditorGUILayout.LabelField("=== Efficiency ===", EditorStyles.boldLabel);
+        
+        float efficiency = aero.currentDownforce / Mathf.Max(aero.currentDrag, 1f);
+        EditorGUILayout.LabelField($"L/D Ratio: {efficiency:F2}");
+        
+        if (efficiency > 5f)
+            EditorGUILayout.LabelField("  → Excellent!");
+        else if (efficiency > 3f)
+            EditorGUILayout.LabelField("  → Good");
+        else
+            EditorGUILayout.LabelField("  → Poor");
+        
+        Repaint();
+    }
+}
+#endif
+```
+
+### 9.4 텔레메트리 로거
+
+```csharp
+/// <summary>
+/// 공기역학 데이터 로깅 (분석용)
+/// </summary>
+public class AeroTelemetry : MonoBehaviour
+{
+    [Header("References")]
+    public AerodynamicsModel aeroModel;
+    
+    [Header("Logging")]
+    public bool enableLogging = false;
+    public float logInterval = 0.1f; // 초
+    
+    private float logTimer;
+    private List<AeroDataPoint> dataPoints = new List<AeroDataPoint>();
+    
+    void FixedUpdate()
+    {
+        if (!enableLogging) return;
+        
+        logTimer += Time.fixedDeltaTime;
+        
+        if (logTimer >= logInterval)
+        {
+            LogDataPoint();
+            logTimer = 0f;
+        }
+    }
+    
+    private void LogDataPoint()
+    {
+        AeroDataPoint point = new AeroDataPoint
+        {
+            time = Time.time,
+            speed = aeroModel.vehicleRigidbody.velocity.magnitude,
+            downforce = aeroModel.currentDownforce,
+            drag = aeroModel.currentDrag,
+            slipstreamFactor = aeroModel.slipstreamFactor,
+            isDrsActive = aeroModel.isDrsActive
+        };
+        
+        dataPoints.Add(point);
+    }
+    
+    [ContextMenu("Export Data to CSV")]
+    public void ExportToCSV()
+    {
+        string path = Application.dataPath + "/aero_telemetry.csv";
+        
+        using (System.IO.StreamWriter writer = new System.IO.StreamWriter(path))
+        {
+            // 헤더
+            writer.WriteLine("Time,Speed,Downforce,Drag,Slipstream,DRS");
+            
+            // 데이터
+            foreach (var point in dataPoints)
+            {
+                writer.WriteLine($"{point.time:F2},{point.speed:F2}," +
+                    $"{point.downforce:F0},{point.drag:F0}," +
+                    $"{point.slipstreamFactor:F2},{(point.isDrsActive ? 1 : 0)}");
+            }
+        }
+        
+        Debug.Log($"Telemetry exported to: {path}");
+    }
+}
+
+[System.Serializable]
+public struct AeroDataPoint
+{
+    public float time;
+    public float speed;
+    public float downforce;
+    public float drag;
+    public float slipstreamFactor;
+    public bool isDrsActive;
+}
+```
+
+---
+
+## 3.5.10 성능 최적화
+
+### 10.1 최적화 팁
+
+```csharp
+/// <summary>
+///
